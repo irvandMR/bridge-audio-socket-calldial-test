@@ -5,6 +5,7 @@ import { AmiEvent } from '../ami/ami.type';
 import { AudioSocketServer } from '../audiosocket/audiosocketServer';
 import { AudioSocketSession } from '../audiosocket/audiosocket.type';
 import { CallSession } from './callSession';
+import { Logger } from '../logger/logger';
 
 interface ChannelMetadata {
   channel: string;
@@ -18,6 +19,7 @@ export class BridgeService {
   private ami: AmiClient;
   private server: AudioSocketServer;
   private sessions = new Map<string, CallSession>();
+  private log = new Logger('Bridge');
   
   // Mapping Task ID & Channel
   private taskToChannel = new Map<string, string>();
@@ -47,8 +49,8 @@ export class BridgeService {
         const details = channelName ? this.channelDetails.get(channelName) : undefined;
         const nomor = details?.callerId || details?.exten || 'N/A';
 
-        // Log ringkas & jelas untuk developer
-        console.log(`\n🎉 [CALL UP] Task #${taskId} | Channel: ${channelName || 'Menunggu mapping...'} | Nomor: ${nomor}`);
+        // Log terstruktur & jelas
+        this.log.info(`📞 Call Connected -> Task #${taskId} | Channel: ${channelName || 'N/A'} | Nomor: ${nomor}`);
 
         const call = new CallSession(
           session,
@@ -113,7 +115,7 @@ export class BridgeService {
     if (['hangup', 'softhanguprequest'].includes(eventName || '') && channel) {
       const taskIdStr = this.channelToTask.get(channel);
       if (taskIdStr) {
-        console.log(`📴 [CALL HANGUP] Task #${taskIdStr} | Customer menutup telepon (${channel})`);
+        this.log.info(`📴 Customer Hangup -> Task #${taskIdStr} (${channel})`);
       }
       this.channelDetails.delete(channel);
       if (taskIdStr) {
@@ -126,10 +128,11 @@ export class BridgeService {
   public async start(): Promise<void> {
     this.ami.connect();
     await this.server.start();
-    console.log('🚀 Bridge Voice Bot Service is Running & Ready!\n');
+    this.log.info('🚀 Bridge Service is running & ready for calls!');
   }
 
   public async stop(): Promise<void> {
+    this.log.info('Stopping Bridge Service...');
     for (const call of this.sessions.values()) {
       call.destroy();
     }

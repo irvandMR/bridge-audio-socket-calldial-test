@@ -4,6 +4,7 @@ import { AiClient } from '../ai/aiClient';
 import { AmiClient } from '../ami/amiClient';
 import { AmdDecision, RawVmMessage } from '../ai/ai.type';
 import { AudioSocketServer } from '../audiosocket/audiosocketServer';
+import { Logger } from '../logger/logger';
 
 const CHUNK_SIZE_INBOUND = 800; // 50ms @ 8kHz PCM 16-bit Mono
 
@@ -19,6 +20,7 @@ export class CallSession {
   private onEndCallback: (uuid: string) => void;
   private isDestroyed: boolean = false;
   private inboundBuffer = Buffer.alloc(0);
+  private log: Logger;
 
   constructor(
     session: AudioSocketSession,
@@ -35,13 +37,16 @@ export class CallSession {
     this.ami = ami;
     this.server = server;
     this.onEndCallback = onEnd;
+    this.log = new Logger(`Call #${this.taskId}`);
 
     // Buka sesi WebSocket AI on-demand dengan parameter channel
     this.aiClient = new AiClient(aiWsUrl, channel, {
       onDecision: (decision: AmdDecision, raw: RawVmMessage) => {
         this.handleAmdDecision(decision, raw);
       },
-      onError: () => {},
+      onError: (err) => {
+        this.log.warn(`AI Socket warning: ${err.message}`);
+      },
       onClose: () => {
         this.destroy();
       }
@@ -50,9 +55,6 @@ export class CallSession {
     this.aiClient.connect();
   }
 
-  /**
-   * Menerima audio dari Asterisk dan memecahnya ke chunk 50ms (800 bytes)
-   */
   public pushAudio(chunk: Buffer): void {
     if (this.isDestroyed || !this.aiClient.ready) return;
 
@@ -65,9 +67,6 @@ export class CallSession {
     }
   }
 
-  /**
-   * Menangani keputusan AMD dari AI
-   */
   private handleAmdDecision(decision: AmdDecision, raw: RawVmMessage): void {
     if (this.isDestroyed) return;
 
@@ -75,19 +74,18 @@ export class CallSession {
     const confStr = conf ? ` (conf: ${conf})` : '';
 
     if (decision === 'HUMAN') {
-      console.log(`👤 [DETEKSI #TASK-${this.taskId}] = HUMAN DETECTED${confStr}! Transfer nasabah ke Agen...`);
+      this.log.info(`👤 Result: HUMAN${confStr} -> Transferring to human agent.`);
       this.ami.sendUserEvent(this.taskId, 'HUMAN', `HUMAN_DETECTED${confStr}`);
-      // Putus AudioSocket agar Asterisk melangkah ke dialplan berikutnya (Dial agen)
       this.server.sendHangup(this.session);
     } else if (decision === 'NOTHING') {
-      console.log(`🔇 [DETEKSI #TASK-${this.taskId}] = NOTHING (Silence / No Audio Detected)!`);
+      this.log.info(`🔇 Result: NOTHING (Silence) -> Terminating call.`);
       this.ami.sendUserEvent(this.taskId, 'NOTHING', 'NO_AUDIO_DETECTED');
       this.server.sendHangup(this.session);
       if (this.channel) {
         this.ami.hangup(this.channel, 16);
       }
     } else if (decision === 'MACHINE') {
-      console.log(`📼 [DETEKSI #TASK-${this.taskId}] = VOICEMAIL / MACHINE DETECTED${confStr}!`);
+      this.log.info(`📼 Result: MACHINE / VOICEMAIL${confStr} -> Terminating call.`);
       this.ami.sendUserEvent(this.taskId, 'MACHINE', `VOICEMAIL_DETECTED${confStr}`);
       this.server.sendHangup(this.session);
       if (this.channel) {
