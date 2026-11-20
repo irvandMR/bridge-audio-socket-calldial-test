@@ -18,10 +18,7 @@ const ami = new AmiClient(CONFIG.ami, {
 
     // Coba simulasikan kirim UserEvent AMD dummy
     console.log('📤 Mengirim Action UserEvent (AMDResult test)...');
-    ami.sendUserEvent('AMDResult', {
-      Channel: 'TestChannel/Dummy-001',
-      Result: 'HUMAN'
-    });
+    ami.sendUserEvent(999, 'HUMAN', 'TEST_HUMAN_DETECTED');
 
     console.log('👂 Menunggu event dari Asterisk selama 5 detik...');
     setTimeout(() => {

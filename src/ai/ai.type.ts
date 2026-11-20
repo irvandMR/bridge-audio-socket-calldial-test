@@ -1,15 +1,20 @@
+// src/ai/ai.type.ts
 
 export type AmdDecision = 'HUMAN' | 'MACHINE' | 'NOTHING';
 
 export interface VmStartMessage {
   type: 'vm_start';
-  sr: number;
+  sr?: number;
 }
 
 export interface RawVmMessage {
-  type: 'raw_vm';
-  prediction: AmdDecision | string;
-  confidence?: number;
+  type?: string;
+  status?: string;     // 'HUMAN' | 'MACHINE' | 'NOTHING'
+  label?: string;      // 'LIVE_HUMAN' | 'VOICEMAIL' | 'HUMAN' | 'NOTHING'
+  no_audio?: boolean;  // true -> silence / no audio
+  confidence?: number | string;
+  p_live_human?: number | string;
+  p_voicemail?: number | string;
   [key: string]: any;
 }
 
@@ -17,7 +22,7 @@ export type AiServerMessage = VmStartMessage | RawVmMessage;
 
 export interface AiClientCallback {
   onStart?: (data: VmStartMessage) => void;
-  onDecision?: (data: AmdDecision | string, raw: RawVmMessage) => void;
+  onDecision?: (decision: AmdDecision, raw: RawVmMessage) => void;
   onError?: (error: Error) => void;
   onClose?: (code: number, reason: string) => void;
 }

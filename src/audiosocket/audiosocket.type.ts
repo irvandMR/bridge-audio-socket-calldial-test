@@ -1,3 +1,4 @@
+// src/audiosocket/audiosocket.type.ts
 import net from 'node:net';
 
 export enum AudioSocketMessageType {
@@ -13,7 +14,8 @@ export interface AudioSocketConfig {
 }
 
 export interface AudioSocketSession {
-  id: string; // UUID panggilan dari Asterisk
+  id: string;      // UUID string format
+  taskId: number;  // Task ID diekstrak dari 6 byte terakhir UUID
   socket: net.Socket;
   createdAt: Date;
 }

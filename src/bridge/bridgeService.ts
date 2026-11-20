@@ -1,3 +1,4 @@
+// src/bridge/bridgeService.ts
 import { CONFIG } from '../config/config';
 import { AmiClient } from '../ami/amiClient';
 import { AmiEvent } from '../ami/ami.type';
@@ -5,34 +6,59 @@ import { AudioSocketServer } from '../audiosocket/audiosocketServer';
 import { AudioSocketSession } from '../audiosocket/audiosocket.type';
 import { CallSession } from './callSession';
 
+interface ChannelMetadata {
+  channel: string;
+  callerId?: string;
+  exten?: string;
+  state?: string;
+  uniqueid?: string;
+}
+
 export class BridgeService {
   private ami: AmiClient;
   private server: AudioSocketServer;
-  private sessions: Map<string, CallSession> = new Map<string, CallSession>();
-  private uuidToChannel: Map<string, string> = new Map<string, string>();
+  private sessions = new Map<string, CallSession>();
+  
+  // Mapping Task ID & Channel
+  private taskToChannel = new Map<string, string>();
+  private channelToTask = new Map<string, string>();
+  private channelDetails = new Map<string, ChannelMetadata>();
 
   constructor() {
     this.ami = new AmiClient(CONFIG.ami, {
-      onAuthenticated: () => console.log('[AMI] Authenticated to Asterisk PBX.'),
-      onEvent: (event: AmiEvent) => this.handleAmiEvent(event),
-      onError: (err: Error) => console.error('[AMI] Error:', err.message)
+      onEvent: (event: AmiEvent) => this.handleAmiEvent(event)
     });
 
     this.server = new AudioSocketServer(CONFIG.audioSocket, {
-      onSessionStart: (session: AudioSocketSession) => {
-        const uuid = session.id.toLowerCase();
-        const channel = this.uuidToChannel.get(uuid);
-        console.log(`\n📞 [Call Start] UUID: ${uuid} | Channel: ${channel || 'Unknown'}`);
+      onSessionStart: async (session: AudioSocketSession) => {
+        const taskId = session.taskId;
+        const taskIdStr = String(taskId);
+
+        // Cari channel dari mapping atau query via AMI Getvar CHAN_<task_id>
+        let channelName = this.taskToChannel.get(taskIdStr);
+        if (!channelName && taskId > 0) {
+          channelName = await this.ami.getVar(`CHAN_${taskId}`);
+          if (channelName) {
+            this.taskToChannel.set(taskIdStr, channelName);
+            this.channelToTask.set(channelName, taskIdStr);
+          }
+        }
+
+        const details = channelName ? this.channelDetails.get(channelName) : undefined;
+        const nomor = details?.callerId || details?.exten || 'N/A';
+
+        // Log ringkas & jelas untuk developer
+        console.log(`\n🎉 [CALL UP] Task #${taskId} | Channel: ${channelName || 'Menunggu mapping...'} | Nomor: ${nomor}`);
 
         const call = new CallSession(
           session,
           CONFIG.ai.wsUrl,
           this.ami,
           this.server,
-          channel,
+          channelName,
           (id: string) => this.sessions.delete(id)
         );
-        this.sessions.set(uuid, call);
+        this.sessions.set(session.id.toLowerCase(), call);
       },
 
       onAudioData: (session: AudioSocketSession, chunk: Buffer) => {
@@ -40,8 +66,7 @@ export class BridgeService {
         call?.pushAudio(chunk);
       },
 
-      onSessionEnd: (session: AudioSocketSession, reason: string) => {
-        console.log(`⏹️ [Call End] UUID: ${session.id} (${reason})`);
+      onSessionEnd: (session: AudioSocketSession) => {
         const call = this.sessions.get(session.id.toLowerCase());
         call?.destroy();
       }
@@ -49,24 +74,51 @@ export class BridgeService {
   }
 
   private handleAmiEvent(event: AmiEvent): void {
-    // Tangkap mapping AUDIOSOCKET_UUID dari dialplan
-    if (event.event?.toLowerCase() === 'varset') {
-      const varName = (event as Record<string, any>).variable;
-      const varValue = (event as Record<string, any>).value;
-      if (varName && varName.toUpperCase().includes('AUDIOSOCKET_UUID') && varValue && event.channel) {
-        const uuid = String(varValue).trim().toLowerCase();
-        this.uuidToChannel.set(uuid, event.channel);
-        console.log(`[AMI] Mapped UUID [${uuid}] -> Channel [${event.channel}]`);
+    const raw = event as Record<string, any>;
+    const eventName = event.event?.toLowerCase();
+    const channel = event.channel;
+
+    // 1. Simpan metadata nomor & state panggilan
+    if (['newchannel', 'newcallerid', 'newstate', 'dialbegin'].includes(eventName || '')) {
+      if (channel) {
+        const existing = this.channelDetails.get(channel) || { channel };
+        existing.callerId = raw.calleridnum || raw.connectedlinenum || existing.callerId;
+        existing.exten = raw.exten || raw.dialstring || existing.exten;
+        existing.state = raw.channelstatedesc || existing.state;
+        existing.uniqueid = raw.uniqueid || existing.uniqueid;
+        this.channelDetails.set(channel, existing);
       }
     }
 
-    // Bersihkan mapping jika channel hangup
-    if (event.event?.toLowerCase() === 'hangup' && event.channel) {
-      for (const [uuid, ch] of this.uuidToChannel.entries()) {
-        if (ch === event.channel) {
-          this.uuidToChannel.delete(uuid);
-          break;
+    // 2. Tangkap variabel TASK_ID atau CHAN_<id> dari Asterisk Dialplan
+    if (eventName === 'varset') {
+      const varName = String(raw.variable || '').toUpperCase();
+      const val = String(raw.value || '').trim();
+
+      if (channel && val && val !== '(null)') {
+        if (varName === 'TASK_ID' || varName === 'TASKID') {
+          this.taskToChannel.set(val, channel);
+          this.channelToTask.set(channel, val);
+        } else if (varName.startsWith('CHAN_')) {
+          const tid = varName.split('_')[1];
+          if (tid) {
+            this.taskToChannel.set(tid, val);
+            this.channelToTask.set(val, tid);
+          }
         }
+      }
+    }
+
+    // 3. Customer menutup telepon di HP
+    if (['hangup', 'softhanguprequest'].includes(eventName || '') && channel) {
+      const taskIdStr = this.channelToTask.get(channel);
+      if (taskIdStr) {
+        console.log(`📴 [CALL HANGUP] Task #${taskIdStr} | Customer menutup telepon (${channel})`);
+      }
+      this.channelDetails.delete(channel);
+      if (taskIdStr) {
+        this.taskToChannel.delete(taskIdStr);
+        this.channelToTask.delete(channel);
       }
     }
   }
@@ -78,7 +130,6 @@ export class BridgeService {
   }
 
   public async stop(): Promise<void> {
-    console.log('🛑 Stopping Bridge Service...');
     for (const call of this.sessions.values()) {
       call.destroy();
     }

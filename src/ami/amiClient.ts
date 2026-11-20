@@ -1,3 +1,4 @@
+// src/ami/amiClient.ts
 import net from 'node:net';
 import { 
   AmiConfig, 
@@ -16,15 +17,13 @@ export class AmiClient {
   private isAuthenticated: boolean = false;
   private shouldReconnect: boolean = true;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private actionResolvers = new Map<string, (response: AmiResponse) => void>();
 
   constructor(config: AmiConfig, callbacks: AmiClientCallbacks = {}) {
     this.config = config;
     this.callbacks = callbacks;
   }
 
-  /**
-   * Membuka koneksi TCP ke Asterisk AMI
-   */
   public connect(): void {
     if (this.socket) return;
 
@@ -39,10 +38,6 @@ export class AmiClient {
     this.socket.setEncoding('utf-8');
 
     this.socket.on('connect', () => {
-      console.log('[AMI] TCP Socket connected. Waiting for Asterisk banner & authenticating...');
-      if (this.callbacks.onConnect) {
-        this.callbacks.onConnect();
-      }
       this.login();
     });
 
@@ -52,7 +47,6 @@ export class AmiClient {
     });
 
     this.socket.on('error', (err: Error) => {
-      console.error('[AMI] Socket error:', err.message);
       if (this.callbacks.onError) {
         this.callbacks.onError(err);
       }
@@ -61,22 +55,15 @@ export class AmiClient {
     this.socket.on('close', (hadError: boolean) => {
       this.isAuthenticated = false;
       this.socket = null;
-      console.log(`[AMI] Connection closed (hadError: ${hadError})`);
-      
       if (this.callbacks.onClose) {
         this.callbacks.onClose(hadError);
       }
-
       if (this.shouldReconnect) {
-        console.log('[AMI] Reconnecting in 5 seconds...');
-        this.reconnectTimer = setTimeout(() => this.connect(), 5000);
+        this.reconnectTimer = setTimeout(() => this.connect(), 3000);
       }
     });
   }
 
-  /**
-   * Mengirim Action Login ke Asterisk AMI
-   */
   private login(): void {
     this.sendAction('Login', {
       Username: this.config.user,
@@ -85,37 +72,28 @@ export class AmiClient {
     });
   }
 
-  /**
-   * Mengirim generic Action ke Asterisk AMI
-   */
   public sendAction(action: string, params: AmiActionParams = {}): void {
-    if (!this.socket || this.socket.destroyed) {
-      console.warn(`[AMI] Cannot send Action '${action}', socket is not connected.`);
-      return;
-    }
+    if (!this.socket || this.socket.destroyed) return;
 
     let message = `Action: ${action}\r\n`;
     for (const [key, value] of Object.entries(params)) {
       message += `${key}: ${value}\r\n`;
     }
-    message += '\r\n'; // AMI pesan diakhiri dengan baris kosong ganda
+    message += '\r\n';
 
     this.socket.write(message);
   }
 
-  /**
-   * Mengirim UserEvent ke Dialplan Asterisk (misal hasil AMD: HUMAN / MACHINE)
-   */
-  public sendUserEvent(userEvent: string, params: AmiActionParams = {}): void {
+  public sendUserEvent(taskId: number, result: string, cause: string = '', uniqueid: string = ''): void {
     this.sendAction('UserEvent', {
-      UserEvent: userEvent,
-      ...params
+      UserEvent: 'AMDResult',
+      taskid: taskId,
+      result: result,
+      cause: cause,
+      uniqueid: uniqueid
     });
   }
 
-  /**
-   * Memutus (Hangup) channel panggilan telepon di Asterisk
-   */
   public hangup(channel: string, cause: number = 16): void {
     this.sendAction('Hangup', {
       Channel: channel,
@@ -124,22 +102,45 @@ export class AmiClient {
   }
 
   /**
-   * Memproses buffer teks masuk dan memecah pesan berdasarkan delimiter CRLF
+   * Mengambil nilai variabel Asterisk via AMI (Action: Getvar)
    */
+  public getVar(variable: string, channel?: string): Promise<string> {
+    return new Promise((resolve) => {
+      const actionId = `var_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const params: AmiActionParams = {
+        ActionID: actionId,
+        Variable: variable
+      };
+      if (channel) {
+        params.Channel = channel;
+      }
+
+      const timer = setTimeout(() => {
+        this.actionResolvers.delete(actionId);
+        resolve('');
+      }, 1000);
+
+      this.actionResolvers.set(actionId, (res) => {
+        clearTimeout(timer);
+        this.actionResolvers.delete(actionId);
+        const val = res.value || '';
+        resolve(val === '(null)' ? '' : val);
+      });
+
+      this.sendAction('Getvar', params);
+    });
+  }
+
   private processBuffer(): void {
-    // 1. Tangani banner pertama Asterisk (hanya berakhiran satu '\r\n')
     if (this.buffer.startsWith('Asterisk Call Manager/')) {
       const bannerEndIdx = this.buffer.indexOf('\r\n');
       if (bannerEndIdx !== -1) {
-        const banner = this.buffer.substring(0, bannerEndIdx);
-        console.log(`[AMI] Banner diterima: "${banner}"`);
         this.buffer = this.buffer.substring(bannerEndIdx + 2);
       } else {
-        return; // Tunggu kelengkapan banner
+        return;
       }
     }
 
-    // 2. Setiap paket Response / Event berikutnya selalu diakhiri '\r\n\r\n'
     let delimiterIndex: number;
     while ((delimiterIndex = this.buffer.indexOf('\r\n\r\n')) !== -1) {
       const rawPacket = this.buffer.substring(0, delimiterIndex);
@@ -151,9 +152,6 @@ export class AmiClient {
     }
   }
 
-  /**
-   * Mem-parsing teks mentah menjadi key-value pairs
-   */
   private handlePacket(rawPacket: string): void {
     const lines = rawPacket.split('\r\n');
     const packetData: Record<string, string> = {};
@@ -167,9 +165,12 @@ export class AmiClient {
       }
     }
 
-    // Identifikasi apakah ini Response atau Event
     if (packetData.response) {
-      this.handleResponse(packetData as unknown as AmiResponse);
+      const res = packetData as unknown as AmiResponse;
+      if (res.actionid && this.actionResolvers.has(res.actionid)) {
+        this.actionResolvers.get(res.actionid)!(res);
+      }
+      this.handleResponse(res);
     } else if (packetData.event) {
       this.handleEvent(packetData as unknown as AmiEvent);
     }
@@ -179,13 +180,11 @@ export class AmiClient {
     if (res.response.toLowerCase() === 'success') {
       if (!this.isAuthenticated) {
         this.isAuthenticated = true;
-        console.log('[AMI] Authentication accepted! Ready to send commands.');
+        console.log('✅ [AMI] Terhubung & Terautentikasi ke Asterisk PBX!');
         if (this.callbacks.onAuthenticated) {
           this.callbacks.onAuthenticated();
         }
       }
-    } else if (res.response.toLowerCase() === 'error') {
-      console.error(`[AMI] Action error: ${res.message || 'Unknown error'}`);
     }
   }
 
@@ -195,9 +194,6 @@ export class AmiClient {
     }
   }
 
-  /**
-   * Menutup koneksi secara manual (tanpa auto-reconnect)
-   */
   public disconnect(): void {
     this.shouldReconnect = false;
     if (this.reconnectTimer) {
@@ -205,15 +201,9 @@ export class AmiClient {
       this.reconnectTimer = null;
     }
     if (this.socket) {
-      this.socket.end();
       this.socket.destroy();
       this.socket = null;
     }
     this.isAuthenticated = false;
-    console.log('[AMI] Disconnected manually.');
-  }
-
-  public get authenticated(): boolean {
-    return this.isAuthenticated;
   }
 }
