@@ -7,6 +7,7 @@ import { AudioSocketServer } from '../audiosocket/audiosocketServer';
 import { Logger } from '../logger/logger';
 
 const CHUNK_SIZE_INBOUND = 800; // 50ms @ 8kHz PCM 16-bit Mono
+const AI_TIMEOUT_FALLBACK_MS = 10000; // 10 detik batas waktu respon AI sebelum fallback ke agen
 
 export class CallSession {
   public readonly uuid: string;
@@ -20,7 +21,9 @@ export class CallSession {
   private server: AudioSocketServer;
   private onEndCallback: (uuid: string) => void;
   private isDestroyed: boolean = false;
+  private hasDecided: boolean = false;
   private inboundBuffer = Buffer.alloc(0);
+  private fallbackTimer: NodeJS.Timeout | null = null;
   private log: Logger;
 
   constructor(
@@ -42,25 +45,36 @@ export class CallSession {
     this.onEndCallback = onEnd;
     this.log = new Logger(`Call #${this.taskId}`);
 
-    // Buka sesi WebSocket AI INSTAN detik ini juga tanpa delay (0 ms blocking)
+    // Buka sesi WebSocket AI INSTAN (0 ms)
     this.aiClient = new AiClient(aiWsUrl, channel, {
       onDecision: (decision: AmdDecision, raw: RawVmMessage) => {
         this.handleAmdDecision(decision, raw);
       },
-      onError: (err) => {
-        this.log.warn(`AI Socket warning: ${err.message}`);
+      // 🛡️ LOG ERROR & AUTO-FALLBACK: Jika socket AI gagal/mati, alihkan langsung ke agen manusia!
+      onError: (err: Error) => {
+        this.fallbackToAgent(`Socket AI error/unreachable: ${err.message}`);
       },
-      onClose: () => {
-        this.destroy();
+      onClose: (code: number, reason: string) => {
+        if (!this.hasDecided) {
+          this.fallbackToAgent(`Socket AI tertutup prematur (code ${code}: ${reason || 'connection dropped'})`);
+        } else {
+          this.destroy();
+        }
       }
     });
 
     this.aiClient.connect();
+
+    // 🛡️ SAFETY TIMER: Jika dalam 10 detik AI tidak merespon/macet, langsung transfer ke agen
+    this.fallbackTimer = setTimeout(() => {
+      if (!this.hasDecided && !this.isDestroyed) {
+        this.fallbackToAgent(`Timeout ${AI_TIMEOUT_FALLBACK_MS / 1000}s menunggu respon AI`);
+      }
+    }, AI_TIMEOUT_FALLBACK_MS);
   }
 
   /**
-   * Menerima audio dari Asterisk.
-   * Langsung di-forward ke AiClient bahkan saat socket sedang proses TLS handshake (zero audio loss).
+   * Menerima audio dari Asterisk dan diteruskan ke AiClient
    */
   public pushAudio(chunk: Buffer): void {
     if (this.isDestroyed) return;
@@ -74,8 +88,13 @@ export class CallSession {
     }
   }
 
+  /**
+   * Eksekusi keputusan resmi dari AI
+   */
   private handleAmdDecision(decision: AmdDecision, raw: RawVmMessage): void {
-    if (this.isDestroyed) return;
+    if (this.isDestroyed || this.hasDecided) return;
+    this.hasDecided = true;
+    this.clearFallbackTimer();
 
     const conf = raw.confidence || raw.p_live_human || raw.p_voicemail || '';
     const confStr = conf ? ` (conf: ${conf})` : '';
@@ -91,7 +110,6 @@ export class CallSession {
         this.channel
       );
 
-      // Tutup AudioSocket secara halus agar channel tetap hidup untuk dial agen
       this.server.closeSocket(this.session);
     } else if (decision === 'NOTHING') {
       this.log.info(`🔇 Result: NOTHING (Silence) -> Terminating call.`);
@@ -124,9 +142,44 @@ export class CallSession {
     this.destroy();
   }
 
+  /**
+   * 🛡️ MEKANISME FAIL-SAFE / GRACEFUL FALLBACK:
+   * Jika server AI mati, socket error, atau timeout, nasabah TIDAK dimatikan.
+   * Melainkan langsung ditransfer ke agen manusia dengan log error yang jelas!
+   */
+  private fallbackToAgent(reason: string): void {
+    if (this.isDestroyed || this.hasDecided) return;
+    this.hasDecided = true;
+    this.clearFallbackTimer();
+
+    this.log.error(`❌ [AI FAILURE] ${reason}`);
+    this.log.info(`👤 [AUTO-FALLBACK] Mengalihkan nasabah Task #${this.taskId} LANGSUNG ke Agen Manusia...`);
+
+    // Kirim UserEvent HUMAN agar calldial-server langsung memindahkan channel ke agen
+    this.ami.sendUserEvent(
+      this.taskId,
+      'HUMAN',
+      `FALLBACK_TRANSFER: ${reason}`,
+      this.uniqueid || '',
+      this.channel
+    );
+
+    // Tutup socket audio agar Asterisk melepaskan channel untuk di-redirect ke agen
+    this.server.closeSocket(this.session);
+    this.destroy();
+  }
+
+  private clearFallbackTimer(): void {
+    if (this.fallbackTimer) {
+      clearTimeout(this.fallbackTimer);
+      this.fallbackTimer = null;
+    }
+  }
+
   public destroy(): void {
     if (this.isDestroyed) return;
     this.isDestroyed = true;
+    this.clearFallbackTimer();
 
     this.aiClient.close();
     this.onEndCallback(this.uuid);
