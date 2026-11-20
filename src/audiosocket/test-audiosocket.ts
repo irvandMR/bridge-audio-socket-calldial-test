@@ -1,8 +1,7 @@
-// src/audiosocket/test-audiosocket.ts
 import net from 'node:net';
 import crypto from 'node:crypto';
 import { AudioSocketServer } from './audiosocketServer';
-import { AudioSocketMessageType } from './audiosocket.type';
+import { AudioSocketMessageType, AudioSocketSession } from './audiosocket.type';
 
 const TEST_PORT = 9099;
 const TEST_HOST = '127.0.0.1';
@@ -13,23 +12,23 @@ console.log('🚀 Memulai pengujian AudioSocket Server & Binary Parser...');
 const server = new AudioSocketServer(
   { host: TEST_HOST, port: TEST_PORT },
   {
-    onSessionStart: (session) => {
+    onSessionStart: (session: AudioSocketSession) => {
       console.log(`✅ [Server] Sesi panggilan terdeteksi! UUID: ${session.id}`);
     },
-    onAudioData: (session, chunk) => {
+    onAudioData: (session: AudioSocketSession, chunk: Buffer) => {
       console.log(`🎵 [Server] Chunk audio diterima dari [${session.id}] - Ukuran: ${chunk.length} bytes`);
     },
-    onSessionEnd: (session, reason) => {
+    onSessionEnd: (session: AudioSocketSession, reason: string) => {
       console.log(`🔌 [Server] Sesi panggilan berakhir: [${session.id}] (Alasan: ${reason})`);
     }
   }
 );
 
-async function runTest() {
+async function runTest(): Promise<void> {
   await server.start();
 
   console.log('📡 [Simulasi Asterisk] Menghubungkan client Asterisk ke port 9099...');
-  const client = net.createConnection({ host: TEST_HOST, port: TEST_PORT }, () => {
+  const client: net.Socket = net.createConnection({ host: TEST_HOST, port: TEST_PORT }, () => {
     console.log('🔗 [Simulasi Asterisk] Client tersambung.');
 
     // Step A: Kirim 16-byte UUID frame (Type 0x01)
@@ -70,7 +69,7 @@ async function runTest() {
   }, 3000);
 }
 
-runTest().catch((err) => {
+runTest().catch((err: unknown) => {
   console.error('❌ Error dalam pengujian:', err);
   process.exit(1);
 });

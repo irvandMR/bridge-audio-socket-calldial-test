@@ -1,25 +1,17 @@
-
-import dotenv from 'dotenv';
-import { AiCLient } from './aiClient';
-dotenv.config();
-
-const wsUrl = process.env.AI_WS_URL;
-
-if (!wsUrl) {
-  console.error('❌ Error: AI_WS_URL belum diatur di file .env');
-  process.exit(1);
-}
+import { CONFIG } from '../config/config';
+import { AiClient } from './aiClient';
+import { VmStartMessage, RawVmMessage, AmdDecision } from './ai.type';
 
 console.log('🚀 Memulai pengujian koneksi ke Server AI...');
 
-const client = new AiCLient(wsUrl, {
-  onStart: (data) => {
+const client = new AiClient(CONFIG.ai.wsUrl, {
+  onStart: (data: VmStartMessage) => {
     console.log('✅ Handshake SUKSES!');
     console.log('Data diterima dari AI:', data);
 
     // Kirim dummy audio buffer 800 bytes (PCM 16-bit silence / no sound) untuk menguji pengiriman
     console.log('📤 Mengirim 1 chunk audio dummy (800 bytes silence)...');
-    const silenceBuffer = Buffer.alloc(800); // 800 bytes bernilai 0x00
+    const silenceBuffer = Buffer.alloc(800);
     client.sendAudio(silenceBuffer);
 
     // Tutup koneksi setelah 3 detik pengujian berhasil
@@ -30,13 +22,13 @@ const client = new AiCLient(wsUrl, {
       process.exit(0);
     }, 3000);
   },
-  onDecision: (decision, raw) => {
+  onDecision: (decision: AmdDecision | string, raw: RawVmMessage) => {
     console.log(`🤖 Keputusan AMD diterima: [${decision}]`, raw);
   },
-  onError: (err) => {
+  onError: (err: Error) => {
     console.error('❌ Terjadi error pada WebSocket:', err.message);
   },
-  onClose: (code, reason) => {
+  onClose: (code: number, reason: string) => {
     console.log(`🔌 Koneksi ditutup (code: ${code}, reason: ${reason})`);
   }
 });

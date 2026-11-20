@@ -1,0 +1,18 @@
+services:
+  bridge-audiosocket:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bridge_audiosocket_calldial
+    restart: unless-stopped
+    # network_mode: host sangat direkomendasikan untuk Asterisk agar:
+    # 1. AudioSocket port 9099 terbuka langsung di host tanpa NAT latency
+    # 2. Dapat mengakses AMI di 127.0.0.1:5038 milik host Asterisk langsung
+    network_mode: host
+    env_file:
+      - .env
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

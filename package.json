@@ -4,7 +4,12 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "tsx src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "tsc",
+    "test:ai": "tsx src/ai/test-ai.ts",
+    "test:ami": "tsx src/ami/test-ami.ts",
+    "test:audiosocket": "tsx src/audiosocket/test-audiosocket.ts"
   },
   "repository": {
     "type": "git",

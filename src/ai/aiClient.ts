@@ -2,7 +2,7 @@ import WebSocket from 'ws';
 import { AiClientCallback, AiServerMessage, RawVmMessage, VmStartMessage } from "./ai.type";
 
 
-export class AiCLient{
+export class AiClient {
 
     private ws : WebSocket | null = null;
     private url : string;

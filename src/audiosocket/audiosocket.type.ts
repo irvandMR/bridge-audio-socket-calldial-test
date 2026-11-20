@@ -1,4 +1,3 @@
-// src/audiosocket/audiosocket.type.ts
 import net from 'node:net';
 
 export enum AudioSocketMessageType {

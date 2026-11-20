@@ -1,19 +1,11 @@
-import dotenv from 'dotenv';
+import { CONFIG } from '../config/config';
 import { AmiClient } from './amiClient';
-
-dotenv.config();
-
-const amiConfig = {
-  host: process.env.AMI_HOST || '127.0.0.1',
-  port: parseInt(process.env.AMI_PORT || '5038', 10),
-  user: process.env.AMI_USER || 'nodejs-ami',
-  secret: process.env.AMI_SECRET || 'Pass1234'
-};
+import { AmiEvent } from './ami.type';
 
 console.log('🚀 Memulai pengujian koneksi ke Asterisk AMI...');
-console.log(`Target: ${amiConfig.user}@${amiConfig.host}:${amiConfig.port}`);
+console.log(`Target: ${CONFIG.ami.user}@${CONFIG.ami.host}:${CONFIG.ami.port}`);
 
-const ami = new AmiClient(amiConfig, {
+const ami = new AmiClient(CONFIG.ami, {
   onConnect: () => {
     console.log('✅ TCP Socket tersambung ke port AMI!');
   },
@@ -39,16 +31,16 @@ const ami = new AmiClient(amiConfig, {
       process.exit(0);
     }, 5000);
   },
-  onEvent: (event) => {
+  onEvent: (event: AmiEvent) => {
     // Tampilkan jika ada event channel hangup/newchannel yang lewat
     if (['hangup', 'newchannel', 'userevent'].includes(event.event?.toLowerCase() || '')) {
       console.log(`[Event Asterisk] ${event.event}:`, event);
     }
   },
-  onError: (err) => {
+  onError: (err: Error) => {
     console.error('❌ Terjadi error pada AMI Socket:', err.message);
   },
-  onClose: (hadError) => {
+  onClose: (hadError: boolean) => {
     console.log(`🔌 Koneksi AMI ditutup (hadError: ${hadError})`);
   }
 });
