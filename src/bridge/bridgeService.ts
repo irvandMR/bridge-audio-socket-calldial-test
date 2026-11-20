@@ -33,49 +33,29 @@ export class BridgeService {
     });
 
     this.server = new AudioSocketServer(CONFIG.audioSocket, {
-      onSessionStart: async (session: AudioSocketSession) => {
+      // ⚡ OPTIMASI LATENCY: Handler dibuat sinkron murni (0ms blocking)
+      onSessionStart: (session: AudioSocketSession) => {
         const taskId = session.taskId;
         const taskIdStr = String(taskId);
 
-        // Cari channel dari mapping atau query via AMI Getvar CHAN_<task_id>
-        let channelName = this.taskToChannel.get(taskIdStr);
-        if (!channelName && taskId > 0) {
-          channelName = await this.ami.getVar(`CHAN_${taskId}`);
-          if (channelName) {
-            this.taskToChannel.set(taskIdStr, channelName);
-            this.channelToTask.set(channelName, taskIdStr);
-          }
-        }
+        // Cek apakah channel sudah ada di cache sinkron
+        const cachedChannel = this.taskToChannel.get(taskIdStr);
+        const cachedDetails = cachedChannel ? this.channelDetails.get(cachedChannel) : undefined;
 
-        const details = channelName ? this.channelDetails.get(channelName) : undefined;
-        
-        // Ambil Phone Number nasabah dari variabel dialplan PHONE_NUMBER jika belum ada
-        let phone = details?.phoneNumber;
-        if (!phone && channelName) {
-          phone = await this.ami.getVar('PHONE_NUMBER', channelName);
-          if (phone && details) {
-            details.phoneNumber = phone;
-          }
-        }
-
-        const callerId = details?.callerId || 'N/A';
-        const phoneCustomer = phone || details?.exten || 'N/A';
-
-        // Tampilkan Caller ID Trunk dan Nomor HP Nasabah secara terpisah
-        this.log.info(
-          `📞 Call Connected -> Task #${taskId} | Channel: ${channelName || 'N/A'} | CallerID: ${callerId} | Phone: ${phoneCustomer}`
-        );
-
+        // 1. BUKA SESI & WEBSOCKET AI INSTAN (0 ms) TANPA AWAIT
         const call = new CallSession(
           session,
           CONFIG.ai.wsUrl,
           this.ami,
           this.server,
-          channelName,
-          details?.uniqueid,
+          cachedChannel,
+          cachedDetails?.uniqueid,
           (id: string) => this.sessions.delete(id)
         );
         this.sessions.set(session.id.toLowerCase(), call);
+
+        // 2. JALANKAN PENCARIAN METADATA CHANNEL DI BACKGROUND (NON-BLOCKING)
+        this.resolveChannelMetadataInBackground(call, taskId, cachedChannel, cachedDetails);
       },
 
       onAudioData: (session: AudioSocketSession, chunk: Buffer) => {
@@ -88,6 +68,51 @@ export class BridgeService {
         call?.destroy();
       }
     });
+  }
+
+  /**
+   * Resolusi nama channel dan nomor telepon secara asinkron di latar belakang
+   * Streaming audio ke AI sudah berjalan paralel tanpa menunggu fungsi ini selesai.
+   */
+  private async resolveChannelMetadataInBackground(
+    call: CallSession,
+    taskId: number,
+    cachedChannel?: string,
+    cachedDetails?: ChannelMetadata
+  ): Promise<void> {
+    const taskIdStr = String(taskId);
+    let channelName = cachedChannel;
+
+    // Jika belum ada di cache, query via AMI Getvar CHAN_<task_id>
+    if (!channelName && taskId > 0) {
+      channelName = await this.ami.getVar(`CHAN_${taskId}`);
+      if (channelName) {
+        this.taskToChannel.set(taskIdStr, channelName);
+        this.channelToTask.set(channelName, taskIdStr);
+        call.channel = channelName;
+      }
+    }
+
+    const details = channelName ? (this.channelDetails.get(channelName) || cachedDetails) : cachedDetails;
+    if (details?.uniqueid && !call.uniqueid) {
+      call.uniqueid = details.uniqueid;
+    }
+
+    // Ambil Phone Number nasabah dari dialplan jika belum ada
+    let phone = details?.phoneNumber;
+    if (!phone && channelName) {
+      phone = await this.ami.getVar('PHONE_NUMBER', channelName);
+      if (phone && details) {
+        details.phoneNumber = phone;
+      }
+    }
+
+    const callerId = details?.callerId || 'N/A';
+    const phoneCustomer = phone || details?.exten || 'N/A';
+
+    this.log.info(
+      `📞 Call Connected -> Task #${taskId} | Channel: ${channelName || 'N/A'} | CallerID: ${callerId} | Phone: ${phoneCustomer}`
+    );
   }
 
   private handleAmiEvent(event: AmiEvent): void {

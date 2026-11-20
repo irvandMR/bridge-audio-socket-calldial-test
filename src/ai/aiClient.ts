@@ -2,7 +2,6 @@
 import WebSocket, { RawData } from 'ws';
 import { 
   AiClientCallback, 
-  AiServerMessage, 
   VmStartMessage, 
   RawVmMessage,
   AmdDecision 
@@ -14,6 +13,7 @@ export class AiClient {
   private channelName?: string;
   private callbacks: AiClientCallback;
   private isConnected: boolean = false;
+  private earlyQueue: Buffer[] = []; // Buffer penampung chunk audio selama TLS handshake
 
   constructor(
     baseUrl: string, 
@@ -43,10 +43,30 @@ export class AiClient {
     if (this.ws) return;
 
     const fullUrl = this.buildUrl();
-    this.ws = new WebSocket(fullUrl);
+
+    // Optimasi WebSocket:
+    // 1. perMessageDeflate: false -> matikan kompresi agar latensi 0 ms untuk PCM raw
+    // 2. handshakeTimeout: 5000 -> fail cepat jika network down
+    this.ws = new WebSocket(fullUrl, {
+      perMessageDeflate: false,
+      handshakeTimeout: 5000
+    });
+
+    // Pasang TCP_NODELAY seketika saat socket TCP TLS terbentuk
+    this.ws.on('upgrade', (response) => {
+      response.socket.setNoDelay(true);
+    });
 
     this.ws.on('open', () => {
       this.isConnected = true;
+
+      // Flush semua audio yang sempat masuk saat handshake sedang berlangsung
+      if (this.earlyQueue.length > 0) {
+        for (const queuedChunk of this.earlyQueue) {
+          this.ws?.send(queuedChunk, { binary: true });
+        }
+        this.earlyQueue = [];
+      }
     });
 
     this.ws.on('message', (data: RawData) => {
@@ -61,17 +81,23 @@ export class AiClient {
 
     this.ws.on('close', (code: number, reason: Buffer) => {
       this.isConnected = false;
+      this.earlyQueue = [];
       if (this.callbacks.onClose) {
         this.callbacks.onClose(code, reason.toString('utf-8'));
       }
     });
   }
 
+  /**
+   * Mengirim audio ke AI secara real-time.
+   * Jika socket masih dalam proses handshake, chunk otomatis ditampung agar kata pertama tidak hilang.
+   */
   public sendAudio(audioChunk: Buffer): void {
-    if (!this.ws || !this.isConnected || this.ws.readyState !== WebSocket.OPEN) {
-      return;
+    if (this.isConnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(audioChunk, { binary: true });
+    } else if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
+      this.earlyQueue.push(audioChunk);
     }
-    this.ws.send(audioChunk, { binary: true });
   }
 
   public close(): void {
@@ -79,6 +105,7 @@ export class AiClient {
       try { this.ws.close(); } catch { }
       this.ws = null;
       this.isConnected = false;
+      this.earlyQueue = [];
     }
   }
 
@@ -95,7 +122,6 @@ export class AiClient {
       const label = String(msg.label || '').toUpperCase();
       const noAudio = msg.no_audio === true;
 
-      // 1. Handshake awal dari AI
       if (mType === 'vm_start') {
         if (this.callbacks.onStart) {
           this.callbacks.onStart(msg as VmStartMessage);
@@ -103,9 +129,7 @@ export class AiClient {
         return;
       }
 
-      // 2. Deteksi Utama AMD
       let decision: AmdDecision | null = null;
-
       if (status === 'HUMAN' || label === 'LIVE_HUMAN' || label === 'HUMAN') {
         decision = 'HUMAN';
       } else if (noAudio || label === 'NOTHING' || status === 'NOTHING') {
@@ -118,7 +142,7 @@ export class AiClient {
         this.callbacks.onDecision(decision, msg);
       }
     } catch {
-      // Abaikan jika frame bukan JSON valid
+      // Abaikan jika non-JSON
     }
   }
 }

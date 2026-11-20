@@ -42,7 +42,7 @@ export class CallSession {
     this.onEndCallback = onEnd;
     this.log = new Logger(`Call #${this.taskId}`);
 
-    // Buka sesi WebSocket AI on-demand dengan parameter channel
+    // Buka sesi WebSocket AI INSTAN detik ini juga tanpa delay (0 ms blocking)
     this.aiClient = new AiClient(aiWsUrl, channel, {
       onDecision: (decision: AmdDecision, raw: RawVmMessage) => {
         this.handleAmdDecision(decision, raw);
@@ -58,8 +58,12 @@ export class CallSession {
     this.aiClient.connect();
   }
 
+  /**
+   * Menerima audio dari Asterisk.
+   * Langsung di-forward ke AiClient bahkan saat socket sedang proses TLS handshake (zero audio loss).
+   */
   public pushAudio(chunk: Buffer): void {
-    if (this.isDestroyed || !this.aiClient.ready) return;
+    if (this.isDestroyed) return;
 
     this.inboundBuffer = Buffer.concat([this.inboundBuffer, chunk]);
 
@@ -79,7 +83,6 @@ export class CallSession {
     if (decision === 'HUMAN') {
       this.log.info(`👤 Result: HUMAN${confStr} -> Transferring to human agent.`);
       
-      // Kirim UserEvent lengkap dengan uniqueid dan channel untuk calldial-server
       this.ami.sendUserEvent(
         this.taskId, 
         'HUMAN', 
@@ -88,8 +91,7 @@ export class CallSession {
         this.channel
       );
 
-      // Tutup AudioSocket secara halus (clean close) TANPA kirim frame 0x00
-      // agar Asterisk tidak panik/error dan channel tetap hidup untuk calldial-server
+      // Tutup AudioSocket secara halus agar channel tetap hidup untuk dial agen
       this.server.closeSocket(this.session);
     } else if (decision === 'NOTHING') {
       this.log.info(`🔇 Result: NOTHING (Silence) -> Terminating call.`);
