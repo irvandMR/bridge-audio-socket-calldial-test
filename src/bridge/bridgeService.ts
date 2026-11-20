@@ -9,7 +9,8 @@ import { Logger } from '../logger/logger';
 
 interface ChannelMetadata {
   channel: string;
-  callerId?: string;
+  callerId?: string;     // Nomor Trunk CallerID (misal: 6820112613461234)
+  phoneNumber?: string;  // Nomor Tujuan / HP Nasabah (misal: 085771518294)
   exten?: string;
   state?: string;
   uniqueid?: string;
@@ -47,10 +48,23 @@ export class BridgeService {
         }
 
         const details = channelName ? this.channelDetails.get(channelName) : undefined;
-        const nomor = details?.callerId || details?.exten || 'N/A';
+        
+        // Ambil Phone Number nasabah dari variabel dialplan PHONE_NUMBER jika belum ada
+        let phone = details?.phoneNumber;
+        if (!phone && channelName) {
+          phone = await this.ami.getVar('PHONE_NUMBER', channelName);
+          if (phone && details) {
+            details.phoneNumber = phone;
+          }
+        }
 
-        // Log terstruktur & jelas
-        this.log.info(`📞 Call Connected -> Task #${taskId} | Channel: ${channelName || 'N/A'} | Nomor: ${nomor}`);
+        const callerId = details?.callerId || 'N/A';
+        const phoneCustomer = phone || details?.exten || 'N/A';
+
+        // Tampilkan Caller ID Trunk dan Nomor HP Nasabah secara terpisah
+        this.log.info(
+          `📞 Call Connected -> Task #${taskId} | Channel: ${channelName || 'N/A'} | CallerID: ${callerId} | Phone: ${phoneCustomer}`
+        );
 
         const call = new CallSession(
           session,
@@ -93,12 +107,14 @@ export class BridgeService {
       }
     }
 
-    // 2. Tangkap variabel TASK_ID atau CHAN_<id> dari Asterisk Dialplan
+    // 2. Tangkap variabel TASK_ID, CHAN_<id>, dan PHONE_NUMBER dari Asterisk Dialplan
     if (eventName === 'varset') {
       const varName = String(raw.variable || '').toUpperCase();
       const val = String(raw.value || '').trim();
 
       if (channel && val && val !== '(null)') {
+        const existing = this.channelDetails.get(channel) || { channel };
+
         if (varName === 'TASK_ID' || varName === 'TASKID') {
           this.taskToChannel.set(val, channel);
           this.channelToTask.set(channel, val);
@@ -108,6 +124,9 @@ export class BridgeService {
             this.taskToChannel.set(tid, val);
             this.channelToTask.set(val, tid);
           }
+        } else if (varName === 'PHONE_NUMBER' || varName === 'PHONE') {
+          existing.phoneNumber = val;
+          this.channelDetails.set(channel, existing);
         }
       }
     }
