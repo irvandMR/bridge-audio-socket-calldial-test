@@ -125,12 +125,23 @@ export class AmiClient {
   }
 
   /**
-   * Memproses buffer teks masuk dan memecah pesan berdasarkan delimiter CRLF ganda
+   * Memproses buffer teks masuk dan memecah pesan berdasarkan delimiter CRLF
    */
   private processBuffer(): void {
-    let delimiterIndex: number;
+    // 1. Tangani banner pertama Asterisk (hanya berakhiran satu '\r\n')
+    if (this.buffer.startsWith('Asterisk Call Manager/')) {
+      const bannerEndIdx = this.buffer.indexOf('\r\n');
+      if (bannerEndIdx !== -1) {
+        const banner = this.buffer.substring(0, bannerEndIdx);
+        console.log(`[AMI] Banner diterima: "${banner}"`);
+        this.buffer = this.buffer.substring(bannerEndIdx + 2);
+      } else {
+        return; // Tunggu kelengkapan banner
+      }
+    }
 
-    // Setiap paket AMI selalu diakhiri dengan '\r\n\r\n'
+    // 2. Setiap paket Response / Event berikutnya selalu diakhiri '\r\n\r\n'
+    let delimiterIndex: number;
     while ((delimiterIndex = this.buffer.indexOf('\r\n\r\n')) !== -1) {
       const rawPacket = this.buffer.substring(0, delimiterIndex);
       this.buffer = this.buffer.substring(delimiterIndex + 4);
@@ -145,11 +156,6 @@ export class AmiClient {
    * Mem-parsing teks mentah menjadi key-value pairs
    */
   private handlePacket(rawPacket: string): void {
-    // Abaikan banner pertama Asterisk (contoh: "Asterisk Call Manager/5.0.3")
-    if (rawPacket.startsWith('Asterisk Call Manager/')) {
-      return;
-    }
-
     const lines = rawPacket.split('\r\n');
     const packetData: Record<string, string> = {};
 
