@@ -58,6 +58,7 @@ export class BridgeService {
           this.ami,
           this.server,
           channelName,
+          details?.uniqueid,
           (id: string) => this.sessions.delete(id)
         );
         this.sessions.set(session.id.toLowerCase(), call);

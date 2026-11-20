@@ -12,6 +12,7 @@ export class CallSession {
   public readonly uuid: string;
   public readonly taskId: number;
   public channel?: string;
+  public uniqueid?: string;
 
   private session: AudioSocketSession;
   private aiClient: AiClient;
@@ -28,12 +29,14 @@ export class CallSession {
     ami: AmiClient,
     server: AudioSocketServer,
     channel: string | undefined,
+    uniqueid: string | undefined,
     onEnd: (uuid: string) => void
   ) {
     this.uuid = session.id.toLowerCase();
     this.taskId = session.taskId;
     this.session = session;
     this.channel = channel;
+    this.uniqueid = uniqueid;
     this.ami = ami;
     this.server = server;
     this.onEndCallback = onEnd;
@@ -75,19 +78,42 @@ export class CallSession {
 
     if (decision === 'HUMAN') {
       this.log.info(`👤 Result: HUMAN${confStr} -> Transferring to human agent.`);
-      this.ami.sendUserEvent(this.taskId, 'HUMAN', `HUMAN_DETECTED${confStr}`);
-      this.server.sendHangup(this.session);
+      
+      // Kirim UserEvent lengkap dengan uniqueid dan channel untuk calldial-server
+      this.ami.sendUserEvent(
+        this.taskId, 
+        'HUMAN', 
+        `HUMAN_DETECTED${confStr}`, 
+        this.uniqueid || '', 
+        this.channel
+      );
+
+      // Tutup AudioSocket secara halus (clean close) TANPA kirim frame 0x00
+      // agar Asterisk tidak panik/error dan channel tetap hidup untuk calldial-server
+      this.server.closeSocket(this.session);
     } else if (decision === 'NOTHING') {
       this.log.info(`🔇 Result: NOTHING (Silence) -> Terminating call.`);
-      this.ami.sendUserEvent(this.taskId, 'NOTHING', 'NO_AUDIO_DETECTED');
-      this.server.sendHangup(this.session);
+      this.ami.sendUserEvent(
+        this.taskId, 
+        'NOTHING', 
+        'NO_AUDIO_DETECTED', 
+        this.uniqueid || '', 
+        this.channel
+      );
+      this.server.closeSocket(this.session);
       if (this.channel) {
         this.ami.hangup(this.channel, 16);
       }
     } else if (decision === 'MACHINE') {
       this.log.info(`📼 Result: MACHINE / VOICEMAIL${confStr} -> Terminating call.`);
-      this.ami.sendUserEvent(this.taskId, 'MACHINE', `VOICEMAIL_DETECTED${confStr}`);
-      this.server.sendHangup(this.session);
+      this.ami.sendUserEvent(
+        this.taskId, 
+        'MACHINE', 
+        `VOICEMAIL_DETECTED${confStr}`, 
+        this.uniqueid || '', 
+        this.channel
+      );
+      this.server.closeSocket(this.session);
       if (this.channel) {
         this.ami.hangup(this.channel, 16);
       }

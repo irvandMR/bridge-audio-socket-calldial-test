@@ -28,7 +28,6 @@ export class AmiClient {
     if (this.socket) return;
 
     this.shouldReconnect = true;
-    console.log(`[AMI] Connecting to Asterisk at ${this.config.host}:${this.config.port}...`);
 
     this.socket = net.createConnection({
       host: this.config.host,
@@ -84,14 +83,21 @@ export class AmiClient {
     this.socket.write(message);
   }
 
-  public sendUserEvent(taskId: number, result: string, cause: string = '', uniqueid: string = ''): void {
-    this.sendAction('UserEvent', {
+  /**
+   * Mengirim UserEvent AMDResult ke Asterisk Dialplan & Calldial Backend
+   */
+  public sendUserEvent(taskId: number, result: string, cause: string = '', uniqueid: string = '', channel?: string): void {
+    const params: AmiActionParams = {
       UserEvent: 'AMDResult',
       taskid: taskId,
       result: result,
       cause: cause,
       uniqueid: uniqueid
-    });
+    };
+    if (channel) {
+      params.Channel = channel;
+    }
+    this.sendAction('UserEvent', params);
   }
 
   public hangup(channel: string, cause: number = 16): void {

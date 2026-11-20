@@ -21,7 +21,7 @@ export class AudioSocketServer {
   public start(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.server = net.createServer((socket: net.Socket) => {
-        // TCP_NODELAY = 1 untuk streaming ultra low-latency (0 buffer lag)
+        // TCP_NODELAY untuk pengiriman real-time tanpa buffer delay
         socket.setNoDelay(true);
         this.handleNewConnection(socket);
       });
@@ -66,7 +66,7 @@ export class AudioSocketServer {
     });
 
     socket.on('error', () => {
-      // Diamkan log error socket agar tidak spamming jika customer menutup telepon
+      // Diamkan error saat soket diputus normal
     });
 
     socket.on('close', () => {
@@ -108,7 +108,7 @@ export class AudioSocketServer {
         if (this.callbacks.onSessionEnd) {
           this.callbacks.onSessionEnd(session, 'Asterisk HANGUP');
         }
-        session.socket.end();
+        this.closeSocket(session);
         break;
       }
 
@@ -116,7 +116,7 @@ export class AudioSocketServer {
         if (this.callbacks.onSessionEnd) {
           this.callbacks.onSessionEnd(session, 'Asterisk ERROR');
         }
-        session.socket.destroy();
+        this.closeSocket(session);
         break;
       }
     }
@@ -134,19 +134,24 @@ export class AudioSocketServer {
     ].join('-');
   }
 
-  public sendHangup(session: AudioSocketSession): void {
+  /**
+   * Menutup socket audio secara halus TANPA mengirim paket biner 0x00
+   * (agar Asterisk app_audiosocket tidak menganggapnya crash/error)
+   */
+  public closeSocket(session: AudioSocketSession): void {
     if (!session.socket || session.socket.destroyed) return;
-    const header = Buffer.alloc(3);
-    header.writeUInt8(AudioSocketMessageType.HANGUP, 0);
-    header.writeUInt16BE(0, 1);
-    session.socket.write(header);
-    session.socket.end();
+    try {
+      session.socket.end();
+      session.socket.destroy();
+    } catch {
+      // Ignore
+    }
   }
 
   public stop(): Promise<void> {
     return new Promise((resolve) => {
       for (const session of this.sessions.values()) {
-        session.socket.destroy();
+        this.closeSocket(session);
       }
       this.sessions.clear();
       if (this.server) {
