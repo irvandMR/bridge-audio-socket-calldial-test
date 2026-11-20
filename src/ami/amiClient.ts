@@ -1,4 +1,3 @@
-// src/ami/amiClient.ts
 import net from 'node:net';
 import { 
   AmiConfig, 

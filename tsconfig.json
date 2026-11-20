@@ -7,7 +7,6 @@
     /* Environment / Module System */
     "target": "ES2022",
     "module": "CommonJS",
-    "moduleResolution": "node",
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
 
