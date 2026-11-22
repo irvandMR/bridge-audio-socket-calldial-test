@@ -156,7 +156,7 @@ export class CallSession {
     const confStr = conf ? ` (conf: ${conf})` : '';
 
     if (decision === 'HUMAN') {
-      this.log.info(`👤 Result: HUMAN${confStr} -> Transferring to human agent.`);
+      this.log.info(`👤 [DETEKSI] = HUMAN${confStr}! Bot melanjutkan percakapan dua arah...`);
       
       this.ami.sendUserEvent(
         this.taskId, 
@@ -166,7 +166,8 @@ export class CallSession {
         this.channel
       );
 
-      this.server.closeSocket(this.session);
+      // PENTING: Socket TIDAK ditutup agar bot AI bisa terus berbicara dua arah dengan nasabah!
+      return;
     } else if (decision === 'NOTHING') {
       this.log.info(`🔇 Result: NOTHING (Silence) -> Terminating call.`);
       this.ami.sendUserEvent(
