@@ -135,6 +135,30 @@ export class AudioSocketServer {
   }
 
   /**
+   * Mengirim audio dari AI (outbound) ke Asterisk agar terdengar oleh nasabah.
+   * Format AudioSocket: Type 0x10 (1 byte) + Length (2 bytes Big-Endian) + PCM payload
+   */
+  public sendAudio(session: AudioSocketSession, chunk: Buffer): void {
+    if (!session.socket || session.socket.destroyed || !session.socket.writable) return;
+
+    // Maksimum payload AudioSocket adalah 65535, standar frame biasanya 640-1600 bytes
+    const MAX_CHUNK = 1600;
+    let offset = 0;
+    while (offset < chunk.length) {
+      const sliceSize = Math.min(chunk.length - offset, MAX_CHUNK);
+      const subChunk = chunk.subarray(offset, offset + sliceSize);
+      offset += sliceSize;
+
+      const frame = Buffer.allocUnsafe(3 + subChunk.length);
+      frame.writeUInt8(AudioSocketMessageType.AUDIO, 0); // 0x10
+      frame.writeUInt16BE(subChunk.length, 1);
+      subChunk.copy(frame, 3);
+
+      session.socket.write(frame);
+    }
+  }
+
+  /**
    * Menutup socket audio secara halus TANPA mengirim paket biner 0x00
    * (agar Asterisk app_audiosocket tidak menganggapnya crash/error)
    */

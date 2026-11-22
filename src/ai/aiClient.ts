@@ -43,6 +43,10 @@ export class AiClient {
       const sep = url.includes('?') ? '&' : '?';
       url += `${sep}nc=0`;
     }
+    if (!url.includes('sr=')) {
+      const sep = url.includes('?') ? '&' : '?';
+      url += `${sep}sr=8000`;
+    }
     if (this.channelName && !url.includes('channel=')) {
       const sep = url.includes('?') ? '&' : '?';
       url += `${sep}channel=${encodeURIComponent(this.channelName)}`;
@@ -86,7 +90,21 @@ export class AiClient {
       }
     });
 
-    this.ws.on('message', (data: RawData) => {
+    this.ws.on('message', (data: RawData, isBinary: boolean) => {
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as any);
+
+      // Deteksi cepat jika payload adalah format teks JSON ({ atau [)
+      const firstByte = buf.length > 0 ? buf[0] : 0;
+      const isJson = firstByte === 0x7B /* { */ || firstByte === 0x5B /* [ */;
+
+      // Jika binary audio dari AI, forward langsung ke Asterisk AudioSocket (zero-latency)
+      if (isBinary || (!isJson && buf.length > 0)) {
+        if (this.callbacks.onAudio) {
+          this.callbacks.onAudio(buf);
+        }
+        return;
+      }
+
       this.handleIncomingMessage(data);
     });
 

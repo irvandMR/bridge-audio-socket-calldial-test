@@ -22,6 +22,7 @@ export class CallSession {
   private onEndCallback: (uuid: string) => void;
   private isDestroyed: boolean = false;
   private hasDecided: boolean = false;
+  private hasSpoken: boolean = false;
   private inboundBuffer = Buffer.alloc(0);
   private fallbackTimer: NodeJS.Timeout | null = null;
   private log: Logger;
@@ -49,23 +50,35 @@ export class CallSession {
     this.aiClient = new AiClient(aiWsUrl, channel, {
       onOpen: (url: string, durationMs: number) => {
         this.log.info(`⚡ Terhubung ke AI (${durationMs}ms) -> ${url}`);
+        // Batalkan timer koneksi setelah WebSocket berhasil terhubung & siap
+        this.clearFallbackTimer();
       },
       onStart: (data: VmStartMessage) => {
         this.log.info(`🤖 AI Ready (sr=${data.sr || 8000}Hz)`);
       },
+      // 🔊 BIDIRECTIONAL: Alirkan suara dari bot AI langsung ke telinga nasabah
+      onAudio: (audioChunk: Buffer) => {
+        if (this.isDestroyed) return;
+        if (!this.hasSpoken) {
+          this.hasSpoken = true;
+          this.log.info(`🔊 AI mulai berbicara (streaming audio ke nasabah)...`);
+        }
+        this.server.sendAudio(this.session, audioChunk);
+      },
       onMessage: (rawText: string) => {
         this.log.info(`📩 Respon AI: ${rawText}`);
+        this.handleCustomAiCommand(rawText);
       },
       onDecision: (decision: AmdDecision, raw: RawVmMessage) => {
         this.handleAmdDecision(decision, raw);
       },
-      // 🛡️ LOG ERROR & AUTO-FALLBACK: Jika socket AI gagal/mati, alihkan langsung ke agen manusia!
+      // 🛡️ LOG ERROR & AUTO-FALLBACK: Jika socket AI gagal/mati sebelum tersambung, alihkan ke agen
       onError: (err: Error) => {
         this.fallbackToAgent(`Socket AI error/unreachable: ${err.message}`);
       },
       onClose: (code: number, reason: string) => {
-        if (!this.hasDecided) {
-          this.fallbackToAgent(`Socket AI tertutup prematur (code ${code}: ${reason || 'connection dropped'})`);
+        if (!this.hasSpoken && !this.hasDecided) {
+          this.fallbackToAgent(`Socket AI tertutup sebelum percakapan (code ${code}: ${reason || 'connection dropped'})`);
         } else {
           this.destroy();
         }
@@ -75,10 +88,10 @@ export class CallSession {
     this.log.info(`🌐 Membuka WebSocket ke AI: ${this.aiClient.getWsUrl()}`);
     this.aiClient.connect();
 
-    // 🛡️ SAFETY TIMER: Jika dalam 10 detik AI tidak merespon/macet, langsung transfer ke agen
+    // 🛡️ SAFETY TIMER: Hanya aktif untuk timeout koneksi awal (misal server AI mati/unresponsive)
     this.fallbackTimer = setTimeout(() => {
-      if (!this.hasDecided && !this.isDestroyed) {
-        this.fallbackToAgent(`Timeout ${AI_TIMEOUT_FALLBACK_MS / 1000}s menunggu respon AI`);
+      if (!this.hasDecided && !this.isDestroyed && !this.hasSpoken) {
+        this.fallbackToAgent(`Timeout ${AI_TIMEOUT_FALLBACK_MS / 1000}s koneksi ke AI`);
       }
     }, AI_TIMEOUT_FALLBACK_MS);
   }
@@ -150,6 +163,38 @@ export class CallSession {
     }
 
     this.destroy();
+  }
+
+  /**
+   * Menangani perintah kontrol dari bot AI (misal perintah transfer ke agen atau hangup)
+   */
+  private handleCustomAiCommand(rawText: string): void {
+    try {
+      const data = JSON.parse(rawText);
+      const action = String(data.action || data.event || data.command || '').toLowerCase();
+
+      if (action === 'transfer' || action === 'escalate') {
+        this.log.info(`👤 Perintah transfer dari AI -> Mengalihkan ke Agen Manusia...`);
+        this.ami.sendUserEvent(
+          this.taskId,
+          'HUMAN',
+          'AI_REQUESTED_TRANSFER',
+          this.uniqueid || '',
+          this.channel
+        );
+        this.server.closeSocket(this.session);
+        this.destroy();
+      } else if (action === 'hangup' || action === 'end') {
+        this.log.info(`📴 Perintah hangup dari AI -> Menutup panggilan...`);
+        this.server.closeSocket(this.session);
+        if (this.channel) {
+          this.ami.hangup(this.channel, 16);
+        }
+        this.destroy();
+      }
+    } catch {
+      // Abaikan jika bukan format JSON
+    }
   }
 
   /**

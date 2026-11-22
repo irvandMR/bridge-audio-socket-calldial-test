@@ -23,6 +23,7 @@ export type AiServerMessage = VmStartMessage | RawVmMessage;
 export interface AiClientCallback {
   onOpen?: (url: string, durationMs: number) => void;
   onStart?: (data: VmStartMessage) => void;
+  onAudio?: (audioChunk: Buffer) => void; // Binary PCM audio dari AI untuk diteruskan ke nasabah
   onDecision?: (decision: AmdDecision, raw: RawVmMessage) => void;
   onMessage?: (rawText: string) => void;
   onError?: (error: Error) => void;
