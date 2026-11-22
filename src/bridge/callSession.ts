@@ -192,9 +192,10 @@ export class CallSession {
     try {
       const msg = JSON.parse(rawText);
       const mType = String(msg.type || '').toLowerCase();
-      const action = String(msg.action || '').toLowerCase();
+      const action = String(msg.action || msg.Action || '').toLowerCase();
       const decision = String(msg.decision || '').toLowerCase();
       const status = String(msg.status || '').toLowerCase();
+      const botStatus = String(msg.bot_status || '').toLowerCase();
       const label = String(msg.label || '').toLowerCase();
 
       // 1. VOICEMAIL / MESIN OPERATOR DETECTED
@@ -233,9 +234,14 @@ export class CallSession {
         return;
       }
 
-      // 4. PERCAKAPAN DENGAN BOT SELESAI
-      if (action === 'hangup' || status === 'completed' || mType === 'bot_done') {
-        this.log.info(`🏁 [DETEKSI] = PERCAKAPAN BOT TUNTAS! Menutup panggilan...`);
+      // 4. PERCAKAPAN DENGAN BOT SELESAI (hangup, terminate, task_completed, bot_done)
+      const isHangupAction = action === 'hangup' || action === 'terminate';
+      const isCompletedStatus = status === 'completed' || botStatus === 'task_completed';
+      const isBotDoneType = mType === 'bot_done';
+
+      if (isHangupAction || isCompletedStatus || isBotDoneType) {
+        const trigger = action || botStatus || mType;
+        this.log.info(`🏁 [DETEKSI] = PERCAKAPAN BOT TUNTAS (${trigger})! Menutup panggilan nasabah...`);
         this.hasDecided = true;
         this.clearFallbackTimer();
         this.ami.sendUserEvent(this.taskId, 'BOT_DONE', 'CONVERSATION_FINISHED');
@@ -243,7 +249,7 @@ export class CallSession {
         if (this.channel) {
           this.ami.hangup(this.channel, 16);
         }
-        this.destroy('Bot Conversation Finished');
+        this.destroy(`Bot Finished (${trigger})`);
         return;
       }
     } catch {
@@ -327,6 +333,16 @@ export class CallSession {
 
     this.log.info(`🛑 Sesi dihentikan [Penyebab: ${source}]`);
     this.sendCallStatus('hangup', '16', source);
+
+    // 1. Tutup koneksi audio TCP AudioSocket ke Asterisk
+    this.server.closeSocket(this.session);
+
+    // 2. Kirim perintah Hangup ke Asterisk AMI agar panggilan di HP nasabah langsung tertutup
+    if (this.channel && !this.isCustomerHangup) {
+      this.ami.hangup(this.channel, 16);
+    }
+
+    // 3. Tutup WebSocket AI
     this.aiClient.close();
     this.onEndCallback(this.uuid);
   }
