@@ -28,6 +28,7 @@ export class CallSession {
   private totalOutboundBytes: number = 0;
   private outboundRemainder: Buffer = Buffer.alloc(0);
   private lastStreamLogTime: number = 0;
+  private hasSentHangupStatus: boolean = false;
   private fallbackTimer: NodeJS.Timeout | null = null;
   private log: Logger;
 
@@ -56,6 +57,9 @@ export class CallSession {
         this.log.info(`⚡ Terhubung ke AI (${durationMs}ms) -> ${url}`);
         // Batalkan timer koneksi setelah WebSocket berhasil terhubung & siap
         this.clearFallbackTimer();
+
+        // 📢 Kirim status panggilan "up" agar server AI tahu panggilan sudah diangkat & langsung memutar greeting!
+        this.sendCallStatus('up');
       },
       onStart: (data: VmStartMessage) => {
         this.log.info(`🤖 AI Ready (sr=${data.sr || 8000}Hz)`);
@@ -255,6 +259,31 @@ export class CallSession {
   }
 
   /**
+   * Mengirim event status panggilan (ringing, up, hangup) ke server AI
+   */
+  public sendCallStatus(status: 'ringing' | 'up' | 'hangup', cause?: string, reason?: string): void {
+    if (status === 'hangup') {
+      if (this.hasSentHangupStatus) return;
+      this.hasSentHangupStatus = true;
+    }
+
+    const payload: Record<string, any> = {
+      event: 'call_status',
+      status,
+      task_id: String(this.taskId),
+      channel: this.channel || ''
+    };
+
+    if (status === 'hangup') {
+      payload.cause = cause || '16';
+      payload.reason = reason || 'Normal Clearing';
+    }
+
+    this.log.info(`📤 Mengirim call_status [${status}] ke AI: ${JSON.stringify(payload)}`);
+    this.aiClient.sendJson(payload);
+  }
+
+  /**
    * Dipanggil saat nasabah menutup telepon di HP (Asterisk HANGUP)
    */
   public handleCustomerHangup(): void {
@@ -262,6 +291,7 @@ export class CallSession {
     this.isCustomerHangup = true;
     this.hasDecided = true;
     this.clearFallbackTimer();
+    this.sendCallStatus('hangup', '16', 'Customer Hangup');
     this.log.info(`📴 Nasabah menutup telepon. Mengakhiri sesi tanpa dialihkan ke agen.`);
     this.destroy();
   }
@@ -305,6 +335,7 @@ export class CallSession {
     this.isDestroyed = true;
     this.clearFallbackTimer();
 
+    this.sendCallStatus('hangup', '16', 'Normal Clearing');
     this.aiClient.close();
     this.onEndCallback(this.uuid);
   }

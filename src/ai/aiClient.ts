@@ -14,6 +14,7 @@ export class AiClient {
   private callbacks: AiClientCallback;
   private isConnected: boolean = false;
   private earlyQueue: Buffer[] = []; // Buffer penampung chunk audio selama TLS handshake
+  private earlyJsonQueue: string[] = []; // Penampung pesan JSON (misal call_status) sebelum open
 
   constructor(
     baseUrl: string, 
@@ -55,9 +56,11 @@ export class AiClient {
     // Optimasi WebSocket:
     // 1. perMessageDeflate: false -> matikan kompresi agar latensi 0 ms untuk PCM raw
     // 2. handshakeTimeout: 5000 -> fail cepat jika network down
+    // 3. rejectUnauthorized: false -> fleksibilitas cert Netbird VPN
     this.ws = new WebSocket(fullUrl, {
       perMessageDeflate: false,
-      handshakeTimeout: 5000
+      handshakeTimeout: 5000,
+      rejectUnauthorized: false
     });
 
     // Pasang TCP_NODELAY seketika saat socket TCP TLS terbentuk
@@ -71,6 +74,14 @@ export class AiClient {
 
       if (this.callbacks.onOpen) {
         this.callbacks.onOpen(fullUrl, durationMs);
+      }
+
+      // Flush semua pesan JSON awal (misal call_status: up)
+      if (this.earlyJsonQueue.length > 0) {
+        for (const queuedJson of this.earlyJsonQueue) {
+          this.ws?.send(queuedJson);
+        }
+        this.earlyJsonQueue = [];
       }
 
       // Flush semua audio yang sempat masuk saat handshake sedang berlangsung
@@ -131,12 +142,25 @@ export class AiClient {
     }
   }
 
+  /**
+   * Mengirim payload JSON (misal event call_status) ke server AI
+   */
+  public sendJson(payload: Record<string, any>): void {
+    const jsonStr = JSON.stringify(payload);
+    if (this.isConnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(jsonStr);
+    } else {
+      this.earlyJsonQueue.push(jsonStr);
+    }
+  }
+
   public close(): void {
     if (this.ws) {
       try { this.ws.close(); } catch { }
       this.ws = null;
       this.isConnected = false;
       this.earlyQueue = [];
+      this.earlyJsonQueue = [];
     }
   }
 

@@ -96,6 +96,7 @@ export class BridgeService {
         this.taskToChannel.set(taskIdStr, channelName);
         this.channelToTask.set(channelName, taskIdStr);
         call.channel = channelName;
+        call.sendCallStatus('up');
       }
     }
 
