@@ -4,6 +4,7 @@ import { AiClient } from '../ai/aiClient';
 import { AmiClient } from '../ami/amiClient';
 import { AmdDecision, RawVmMessage, VmStartMessage } from '../ai/ai.type';
 import { AudioSocketServer } from '../audiosocket/audiosocketServer';
+import { AudioResampler } from '../utils/audioResampler';
 import { Logger } from '../logger/logger';
 
 const AI_TIMEOUT_FALLBACK_MS = 10000; // 10 detik batas waktu respon AI sebelum fallback ke agen
@@ -25,6 +26,7 @@ export class CallSession {
   private hasSpoken: boolean = false;
   private totalInboundBytes: number = 0;
   private totalOutboundBytes: number = 0;
+  private outboundRemainder: Buffer = Buffer.alloc(0);
   private lastStreamLogTime: number = 0;
   private fallbackTimer: NodeJS.Timeout | null = null;
   private log: Logger;
@@ -58,15 +60,30 @@ export class CallSession {
       onStart: (data: VmStartMessage) => {
         this.log.info(`🤖 AI Ready (sr=${data.sr || 8000}Hz)`);
       },
-      // 🔊 BIDIRECTIONAL: Alirkan suara dari bot AI langsung ke telinga nasabah
+      // 🔊 BIDIRECTIONAL: Alirkan suara dari bot AI (24kHz) -> di-convert ke 8kHz untuk Asterisk
       onAudio: (audioChunk: Buffer) => {
         if (this.isDestroyed) return;
-        if (!this.hasSpoken) {
-          this.hasSpoken = true;
-          this.log.info(`🔊 Suara AI pertama diterima (${audioChunk.length} bytes) -> Mengalirkan ke nasabah...`);
-        }
         this.totalOutboundBytes += audioChunk.length;
-        this.server.sendAudio(this.session, audioChunk);
+
+        // Decimate 24000 Hz ke 8000 Hz (3 input samples = 6 bytes -> 1 output sample = 2 bytes)
+        const full = Buffer.concat([this.outboundRemainder, audioChunk]);
+        const remainderBytes = full.length % 6;
+        const usableBytes = full.length - remainderBytes;
+
+        if (usableBytes > 0) {
+          const chunk24k = full.subarray(0, usableBytes);
+          this.outboundRemainder = full.subarray(usableBytes);
+          const chunk8k = AudioResampler.resample24kTo8k(chunk24k);
+
+          if (!this.hasSpoken) {
+            this.hasSpoken = true;
+            this.log.info(`🔊 Suara AI diterima (${audioChunk.length} bytes @ 24kHz -> di-convert ke ${chunk8k.length} bytes @ 8kHz) -> Mengalirkan ke nasabah...`);
+          }
+
+          this.server.sendAudio(this.session, chunk8k);
+        } else {
+          this.outboundRemainder = full;
+        }
       },
       onMessage: (rawText: string) => {
         this.log.info(`📩 Respon AI: ${rawText}`);
@@ -99,23 +116,26 @@ export class CallSession {
   }
 
   /**
-   * Menerima audio dari Asterisk dan diteruskan ke AiClient secara instan (zero buffer delay)
+   * Menerima audio 8000 Hz dari Asterisk -> di-convert ke 16000 Hz untuk server AI
    */
   public pushAudio(chunk: Buffer): void {
     if (this.isDestroyed) return;
 
     if (this.totalInboundBytes === 0) {
-      this.log.info(`🎙️ Audio pertama dari Asterisk diterima (${chunk.length} bytes) -> Mengalirkan ke AI`);
+      this.log.info(`🎙️ Audio pertama dari Asterisk diterima (${chunk.length} bytes @ 8kHz -> di-convert ke 16kHz) -> Mengalirkan ke AI`);
     }
 
     this.totalInboundBytes += chunk.length;
-    this.aiClient.sendAudio(chunk);
+
+    // Resample 8000 Hz ke 16000 Hz (1 sample = 2 bytes -> 2 samples = 4 bytes)
+    const chunk16k = AudioResampler.resample8kTo16k(chunk);
+    this.aiClient.sendAudio(chunk16k);
 
     const now = Date.now();
     if (now - this.lastStreamLogTime >= 3000) {
       this.lastStreamLogTime = now;
       const inSec = (this.totalInboundBytes / 16000).toFixed(1);
-      const outSec = (this.totalOutboundBytes / 16000).toFixed(1);
+      const outSec = (this.totalOutboundBytes / 48000).toFixed(1); // 48000 bytes/detik @ 24kHz 16-bit
       this.log.info(`📊 Audio Stream -> Nasabah ke AI: ${this.totalInboundBytes} bytes (~${inSec}s) | AI ke Nasabah: ${this.totalOutboundBytes} bytes (~${outSec}s)`);
     }
   }
