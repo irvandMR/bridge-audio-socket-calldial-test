@@ -14,6 +14,7 @@ interface ChannelMetadata {
   exten?: string;
   state?: string;
   uniqueid?: string;
+  outboundResponse?: 'agent' | 'ai';
 }
 
 export class BridgeService {
@@ -25,6 +26,7 @@ export class BridgeService {
   // Mapping Task ID & Channel
   private taskToChannel = new Map<string, string>();
   private channelToTask = new Map<string, string>();
+  private taskToOutboundResponse = new Map<string, 'agent' | 'ai'>();
   private channelDetails = new Map<string, ChannelMetadata>();
 
   constructor() {
@@ -38,9 +40,13 @@ export class BridgeService {
         const taskId = session.taskId;
         const taskIdStr = String(taskId);
 
-        // Cek apakah channel sudah ada di cache sinkron
+        // Cek apakah channel dan outbound_response sudah ada di cache sinkron
         const cachedChannel = this.taskToChannel.get(taskIdStr);
         const cachedDetails = cachedChannel ? this.channelDetails.get(cachedChannel) : undefined;
+        const cachedOutboundResponse = 
+          this.taskToOutboundResponse.get(taskIdStr) || 
+          cachedDetails?.outboundResponse || 
+          'agent';
 
         // 1. BUKA SESI & WEBSOCKET AI INSTAN (0 ms) TANPA AWAIT
         const call = new CallSession(
@@ -50,7 +56,8 @@ export class BridgeService {
           this.server,
           cachedChannel,
           cachedDetails?.uniqueid,
-          (id: string) => this.sessions.delete(id)
+          (id: string) => this.sessions.delete(id),
+          cachedOutboundResponse
         );
         this.sessions.set(session.id.toLowerCase(), call);
 
@@ -115,11 +122,25 @@ export class BridgeService {
       }
     }
 
+    // Ambil OUTBOUND_RESPONSE dari dialplan jika belum terisi
+    let outboundResponse = details?.outboundResponse || this.taskToOutboundResponse.get(taskIdStr);
+    if (!outboundResponse && channelName) {
+      const resp = await this.ami.getVar('OUTBOUND_RESPONSE', channelName);
+      if (resp) {
+        const normalized = resp.trim().toLowerCase();
+        outboundResponse = (normalized === 'ai' || normalized === 'agent') ? normalized : 'agent';
+        if (details) details.outboundResponse = outboundResponse;
+        this.taskToOutboundResponse.set(taskIdStr, outboundResponse);
+      }
+    }
+    const finalOutboundResponse: 'agent' | 'ai' = outboundResponse || 'agent';
+    call.setOutboundResponse(finalOutboundResponse);
+
     const callerId = details?.callerId || 'N/A';
     const phoneCustomer = phone || details?.exten || 'N/A';
 
     this.log.info(
-      `📞 Call Connected -> Task #${taskId} | Channel: ${channelName || 'N/A'} | CallerID: ${callerId} | Phone: ${phoneCustomer}`
+      `📞 Call Connected -> Task #${taskId} | Channel: ${channelName || 'N/A'} | CallerID: ${callerId} | Phone: ${phoneCustomer} | Mode: ${finalOutboundResponse.toUpperCase()}`
     );
   }
 
@@ -140,7 +161,7 @@ export class BridgeService {
       }
     }
 
-    // 2. Tangkap variabel TASK_ID, CHAN_<id>, dan PHONE_NUMBER dari Asterisk Dialplan
+    // 2. Tangkap variabel TASK_ID, CHAN_<id>, OUTBOUND_RESPONSE, dan PHONE_NUMBER dari Asterisk Dialplan
     if (eventName === 'varset') {
       const varName = String(raw.variable || '').toUpperCase();
       const val = String(raw.value || '').trim();
@@ -151,6 +172,11 @@ export class BridgeService {
         if (varName === 'TASK_ID' || varName === 'TASKID') {
           this.taskToChannel.set(val, channel);
           this.channelToTask.set(channel, val);
+          if (existing.outboundResponse) {
+            this.taskToOutboundResponse.set(val, existing.outboundResponse);
+            const activeCall = this.getCallSessionByChannelOrTask(channel, val);
+            activeCall?.setOutboundResponse(existing.outboundResponse);
+          }
         } else if (varName.startsWith('CHAN_')) {
           const tid = varName.split('_')[1];
           if (tid) {
@@ -160,6 +186,20 @@ export class BridgeService {
         } else if (varName === 'PHONE_NUMBER' || varName === 'PHONE') {
           existing.phoneNumber = val;
           this.channelDetails.set(channel, existing);
+        } else if (varName === 'OUTBOUND_RESPONSE' || varName === 'OUTBOUNDRESPONSE') {
+          const normalized = val.toLowerCase();
+          const mode: 'agent' | 'ai' = (normalized === 'ai' || normalized === 'agent') ? normalized : 'agent';
+          existing.outboundResponse = mode;
+          this.channelDetails.set(channel, existing);
+
+          const tid = this.channelToTask.get(channel);
+          if (tid) {
+            this.taskToOutboundResponse.set(tid, mode);
+          }
+          const activeCall = this.getCallSessionByChannelOrTask(channel, tid);
+          if (activeCall) {
+            activeCall.setOutboundResponse(mode);
+          }
         }
       }
     }

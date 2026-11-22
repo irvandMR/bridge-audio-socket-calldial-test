@@ -11,6 +11,7 @@ export class AiClient {
   private ws: WebSocket | null = null;
   private baseUrl: string;
   private channelName?: string;
+  private outboundResponse: 'agent' | 'ai';
   private callbacks: AiClientCallback;
   private isConnected: boolean = false;
   private earlyQueue: Buffer[] = []; // Buffer penampung chunk audio selama TLS handshake
@@ -19,9 +20,11 @@ export class AiClient {
   constructor(
     baseUrl: string, 
     channelOrCallbacks?: string | AiClientCallback, 
-    callbacks?: AiClientCallback
+    callbacks?: AiClientCallback,
+    outboundResponse: 'agent' | 'ai' = 'agent'
   ) {
     this.baseUrl = baseUrl;
+    this.outboundResponse = outboundResponse;
     if (typeof channelOrCallbacks === 'string') {
       this.channelName = channelOrCallbacks;
       this.callbacks = callbacks || {};
@@ -34,16 +37,31 @@ export class AiClient {
     }
   }
 
+  public setOutboundResponse(response: 'agent' | 'ai'): void {
+    this.outboundResponse = response;
+  }
+
   public getWsUrl(): string {
     return this.buildUrl();
   }
 
   private buildUrl(): string {
     let url = this.baseUrl;
+    const sep = url.includes('?') ? '&' : '?';
+    const params: string[] = [];
+
     if (this.channelName && !url.includes('channel=')) {
-      const sep = url.includes('?') ? '&' : '?';
-      url += `${sep}channel=${encodeURIComponent(this.channelName)}`;
+      params.push(`channel=${encodeURIComponent(this.channelName)}`);
     }
+
+    if (this.outboundResponse && !url.includes('outbound_response=')) {
+      params.push(`outbound_response=${encodeURIComponent(this.outboundResponse)}`);
+    }
+
+    if (params.length > 0) {
+      url += `${sep}${params.join('&')}`;
+    }
+
     return url;
   }
 

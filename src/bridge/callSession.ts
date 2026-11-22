@@ -15,6 +15,7 @@ export class CallSession {
   public channel?: string;
   public uniqueid?: string;
   public isCustomerHangup: boolean = false;
+  public outboundResponse: 'agent' | 'ai' = 'agent';
 
   private session: AudioSocketSession;
   private aiClient: AiClient;
@@ -40,74 +41,81 @@ export class CallSession {
     server: AudioSocketServer,
     channel: string | undefined,
     uniqueid: string | undefined,
-    onEnd: (uuid: string) => void
+    onEnd: (uuid: string) => void,
+    outboundResponse: 'agent' | 'ai' = 'agent'
   ) {
     this.uuid = session.id.toLowerCase();
     this.taskId = session.taskId;
     this.session = session;
     this.channel = channel;
     this.uniqueid = uniqueid;
+    this.outboundResponse = outboundResponse;
     this.ami = ami;
     this.server = server;
     this.onEndCallback = onEnd;
     this.log = new Logger(`Call #${this.taskId}`);
 
     // Buka sesi WebSocket AI INSTAN (0 ms)
-    this.aiClient = new AiClient(aiWsUrl, channel, {
-      onOpen: (url: string, durationMs: number) => {
-        this.log.info(`⚡ Terhubung ke AI (${durationMs}ms) -> ${url}`);
-        // Batalkan timer koneksi setelah WebSocket berhasil terhubung & siap
-        this.clearFallbackTimer();
+    this.aiClient = new AiClient(
+      aiWsUrl, 
+      channel, 
+      {
+        onOpen: (url: string, durationMs: number) => {
+          this.log.info(`⚡ Terhubung ke AI (${durationMs}ms) [Mode: ${this.outboundResponse.toUpperCase()}] -> ${url}`);
+          // Batalkan timer koneksi setelah WebSocket berhasil terhubung & siap
+          this.clearFallbackTimer();
 
-        // 📢 Kirim status panggilan "up" agar server AI tahu panggilan sudah diangkat & langsung memutar greeting!
-        this.sendCallStatus('up');
-      },
-      onStart: (data: VmStartMessage) => {
-        this.log.info(`🤖 AI Ready (sr=${data.sr || 8000}Hz)`);
-      },
-      // 🔊 BIDIRECTIONAL: Alirkan suara dari bot AI (24kHz) -> di-convert ke 8kHz untuk Asterisk
-      onAudio: (audioChunk: Buffer) => {
-        if (this.isDestroyed) return;
-        this.totalOutboundBytes += audioChunk.length;
+          // 📢 Kirim status panggilan "up" agar server AI tahu panggilan sudah diangkat & langsung memutar greeting!
+          this.sendCallStatus('up');
+        },
+        onStart: (data: VmStartMessage) => {
+          this.log.info(`🤖 AI Ready (sr=${data.sr || 8000}Hz)`);
+        },
+        // 🔊 BIDIRECTIONAL: Alirkan suara dari bot AI (24kHz) -> di-convert ke 8kHz untuk Asterisk
+        onAudio: (audioChunk: Buffer) => {
+          if (this.isDestroyed) return;
+          this.totalOutboundBytes += audioChunk.length;
 
-        // Decimate 24000 Hz ke 8000 Hz (3 input samples = 6 bytes -> 1 output sample = 2 bytes)
-        const full = Buffer.concat([this.outboundRemainder, audioChunk]);
-        const remainderBytes = full.length % 6;
-        const usableBytes = full.length - remainderBytes;
+          // Decimate 24000 Hz ke 8000 Hz (3 input samples = 6 bytes -> 1 output sample = 2 bytes)
+          const full = Buffer.concat([this.outboundRemainder, audioChunk]);
+          const remainderBytes = full.length % 6;
+          const usableBytes = full.length - remainderBytes;
 
-        if (usableBytes > 0) {
-          const chunk24k = full.subarray(0, usableBytes);
-          this.outboundRemainder = full.subarray(usableBytes);
-          const chunk8k = AudioResampler.resample24kTo8k(chunk24k);
+          if (usableBytes > 0) {
+            const chunk24k = full.subarray(0, usableBytes);
+            this.outboundRemainder = full.subarray(usableBytes);
+            const chunk8k = AudioResampler.resample24kTo8k(chunk24k);
 
-          if (!this.hasSpoken) {
-            this.hasSpoken = true;
-            this.log.info(`🔊 Suara AI diterima (${audioChunk.length} bytes @ 24kHz -> di-convert ke ${chunk8k.length} bytes @ 8kHz) -> Mengalirkan ke nasabah...`);
+            if (!this.hasSpoken) {
+              this.hasSpoken = true;
+              this.log.info(`🔊 Suara AI diterima (${audioChunk.length} bytes @ 24kHz -> di-convert ke ${chunk8k.length} bytes @ 8kHz) -> Mengalirkan ke nasabah...`);
+            }
+
+            this.server.sendAudio(this.session, chunk8k);
+          } else {
+            this.outboundRemainder = full;
           }
-
-          this.server.sendAudio(this.session, chunk8k);
-        } else {
-          this.outboundRemainder = full;
+        },
+        onMessage: (rawText: string) => {
+          this.log.info(`📩 Respon AI: ${rawText}`);
+          this.handleCustomAiCommand(rawText);
+        },
+        onDecision: (decision: AmdDecision, raw: RawVmMessage) => {
+          this.handleAmdDecision(decision, raw);
+        },
+        // 🛡️ LOG ERROR & AUTO-FALLBACK: HANYA saat terjadi error teknis/koneksi pada socket AI
+        onError: (err: Error) => {
+          if (!this.isCustomerHangup) {
+            this.fallbackToAgent(`Socket AI error/unreachable: ${err.message}`);
+          }
+        },
+        onClose: (code: number, reason: string) => {
+          this.log.info(`🔌 WebSocket AI closed (code: ${code}, reason: ${reason || 'normal'})`);
+          this.destroy(`WebSocket AI closed (${code})`);
         }
       },
-      onMessage: (rawText: string) => {
-        this.log.info(`📩 Respon AI: ${rawText}`);
-        this.handleCustomAiCommand(rawText);
-      },
-      onDecision: (decision: AmdDecision, raw: RawVmMessage) => {
-        this.handleAmdDecision(decision, raw);
-      },
-      // 🛡️ LOG ERROR & AUTO-FALLBACK: HANYA saat terjadi error teknis/koneksi pada socket AI
-      onError: (err: Error) => {
-        if (!this.isCustomerHangup) {
-          this.fallbackToAgent(`Socket AI error/unreachable: ${err.message}`);
-        }
-      },
-      onClose: (code: number, reason: string) => {
-        this.log.info(`🔌 WebSocket AI closed (code: ${code}, reason: ${reason || 'normal'})`);
-        this.destroy(`WebSocket AI closed (${code})`);
-      }
-    });
+      this.outboundResponse
+    );
 
     this.log.info(`🌐 Membuka WebSocket ke AI: ${this.aiClient.getWsUrl()}`);
     this.aiClient.connect();
@@ -145,6 +153,14 @@ export class CallSession {
     }
   }
 
+  public setOutboundResponse(response: 'agent' | 'ai'): void {
+    if (this.outboundResponse !== response) {
+      this.log.info(`🔄 Update OUTBOUND_RESPONSE: ${this.outboundResponse} -> ${response}`);
+      this.outboundResponse = response;
+      this.aiClient.setOutboundResponse(response);
+    }
+  }
+
   /**
    * Eksekusi keputusan resmi dari AI
    */
@@ -158,11 +174,25 @@ export class CallSession {
     if (decision === 'HUMAN') {
       if (!this.hasSentHumanEvent) {
         this.hasSentHumanEvent = true;
-        this.log.info(`👤 [DETEKSI] = HUMAN${confStr}! Bot melanjutkan percakapan dua arah...`);
-        // Format payload AMI persis script Python: hanya taskId, result, cause tanpa Channel/uniqueid
-        this.ami.sendUserEvent(this.taskId, 'HUMAN', `HUMAN_DETECTED${confStr}`);
+        this.log.info(`👤 [DETEKSI] = HUMAN${confStr}! Mode: ${this.outboundResponse.toUpperCase()}`);
+
+        if (this.outboundResponse === 'agent') {
+          // MODE AGENT: Transfer nasabah ke agen manusia melalui dialer Asterisk
+          this.log.info(`👥 [MODE AGENT] Menghubungkan nasabah ke Agen Manusia...`);
+          this.hasDecided = true;
+          this.ami.sendUserEvent(this.taskId, 'HUMAN', `HUMAN_DETECTED${confStr}`, this.channel);
+          this.server.closeSocket(this.session);
+          this.destroy('Transferred to Human Agent');
+          return;
+        } else {
+          // MODE AI: Pure AI Voicebot - nasabah mengobrol penuh dengan bot AI
+          this.log.info(`🤖 [MODE AI] Nasabah terhubung dengan Pure AI Bot. Melanjutkan percakapan dua arah...`);
+          // Format payload AMI tanpa Channel agar Asterisk tidak me-redirect / menutup channel audio
+          this.ami.sendUserEvent(this.taskId, 'HUMAN', `HUMAN_DETECTED${confStr}`);
+          // PENTING: Socket & channel Asterisk TIDAK ditutup agar bot AI terus berbicara dua arah
+          return;
+        }
       }
-      // PENTING: Socket & channel Asterisk TIDAK ditutup agar bot AI terus berbicara dua arah dengan nasabah!
       return;
     } else if (decision === 'NOTHING') {
       this.hasDecided = true;
@@ -212,12 +242,25 @@ export class CallSession {
         return;
       }
 
-      // 2. HUMAN DETECTED (Mulai ngobrol dengan bot - Bot melanjutkan percakapan)
+      // 2. HUMAN DETECTED (Mulai ngobrol dengan bot - cek mode agent vs ai)
       if (mType === 'raw_vm' && (label === 'human' || label === 'live_human' || status === 'human')) {
         if (!this.hasSentHumanEvent) {
           this.hasSentHumanEvent = true;
-          this.log.info(`👤 [DETEKSI] = HUMAN! Bot melanjutkan percakapan dua arah...`);
-          this.ami.sendUserEvent(this.taskId, 'HUMAN', 'HUMAN_DETECTED');
+          this.log.info(`👤 [DETEKSI] = HUMAN! Mode: ${this.outboundResponse.toUpperCase()}`);
+
+          if (this.outboundResponse === 'agent') {
+            this.log.info(`👥 [MODE AGENT] Menghubungkan nasabah ke Agen Manusia...`);
+            this.hasDecided = true;
+            this.clearFallbackTimer();
+            this.ami.sendUserEvent(this.taskId, 'HUMAN', 'HUMAN_DETECTED', this.channel);
+            this.server.closeSocket(this.session);
+            this.destroy('Transferred to Human Agent');
+            return;
+          } else {
+            this.log.info(`🤖 [MODE AI] Nasabah terhubung dengan Pure AI Bot. Melanjutkan percakapan dua arah...`);
+            this.ami.sendUserEvent(this.taskId, 'HUMAN', 'HUMAN_DETECTED');
+            return;
+          }
         }
         // Socket TIDAK ditutup agar percakapan dua arah terus berlanjut
         return;
@@ -270,7 +313,8 @@ export class CallSession {
       event: 'call_status',
       status,
       task_id: String(this.taskId),
-      channel: this.channel || ''
+      channel: this.channel || '',
+      outbound_response: this.outboundResponse
     };
 
     if (status === 'hangup') {
