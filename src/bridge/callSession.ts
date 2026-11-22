@@ -14,6 +14,7 @@ export class CallSession {
   public readonly taskId: number;
   public channel?: string;
   public uniqueid?: string;
+  public isCustomerHangup: boolean = false;
 
   private session: AudioSocketSession;
   private aiClient: AiClient;
@@ -72,16 +73,15 @@ export class CallSession {
       onDecision: (decision: AmdDecision, raw: RawVmMessage) => {
         this.handleAmdDecision(decision, raw);
       },
-      // 🛡️ LOG ERROR & AUTO-FALLBACK: Jika socket AI gagal/mati sebelum tersambung, alihkan ke agen
+      // 🛡️ LOG ERROR & AUTO-FALLBACK: HANYA saat terjadi error teknis/koneksi pada socket AI
       onError: (err: Error) => {
-        this.fallbackToAgent(`Socket AI error/unreachable: ${err.message}`);
-      },
-      onClose: (code: number, reason: string) => {
-        if (!this.hasSpoken && !this.hasDecided) {
-          this.fallbackToAgent(`Socket AI tertutup sebelum percakapan (code ${code}: ${reason || 'connection dropped'})`);
-        } else {
-          this.destroy();
+        if (!this.isCustomerHangup) {
+          this.fallbackToAgent(`Socket AI error/unreachable: ${err.message}`);
         }
+      },
+      onClose: (_code: number, _reason: string) => {
+        // Ketika socket AI ditutup (selesai bicara, nasabah tutup, atau AI selesai), tutup sesi normal
+        this.destroy();
       }
     });
 
@@ -198,12 +198,24 @@ export class CallSession {
   }
 
   /**
+   * Dipanggil saat nasabah menutup telepon di HP (Asterisk HANGUP)
+   */
+  public handleCustomerHangup(): void {
+    if (this.isDestroyed || this.isCustomerHangup) return;
+    this.isCustomerHangup = true;
+    this.hasDecided = true;
+    this.clearFallbackTimer();
+    this.log.info(`📴 Nasabah menutup telepon. Mengakhiri sesi tanpa dialihkan ke agen.`);
+    this.destroy();
+  }
+
+  /**
    * 🛡️ MEKANISME FAIL-SAFE / GRACEFUL FALLBACK:
-   * Jika server AI mati, socket error, atau timeout, nasabah TIDAK dimatikan.
-   * Melainkan langsung ditransfer ke agen manusia dengan log error yang jelas!
+   * HANYA jika server AI mati, socket error teknis, atau timeout koneksi awal.
+   * Jika nasabah yang menutup telepon, fungsi ini TIDAK AKAN berjalan.
    */
   private fallbackToAgent(reason: string): void {
-    if (this.isDestroyed || this.hasDecided) return;
+    if (this.isDestroyed || this.hasDecided || this.isCustomerHangup) return;
     this.hasDecided = true;
     this.clearFallbackTimer();
 

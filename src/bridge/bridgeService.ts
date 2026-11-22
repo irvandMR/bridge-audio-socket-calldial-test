@@ -63,9 +63,15 @@ export class BridgeService {
         call?.pushAudio(chunk);
       },
 
-      onSessionEnd: (session: AudioSocketSession) => {
+      onSessionEnd: (session: AudioSocketSession, reason?: string) => {
         const call = this.sessions.get(session.id.toLowerCase());
-        call?.destroy();
+        if (call) {
+          if (reason?.includes('HANGUP')) {
+            call.handleCustomerHangup();
+          } else {
+            call.destroy();
+          }
+        }
       }
     });
   }
@@ -156,18 +162,32 @@ export class BridgeService {
       }
     }
 
-    // 3. Customer menutup telepon di HP
-    if (['hangup', 'softhanguprequest'].includes(eventName || '') && channel) {
-      const taskIdStr = this.channelToTask.get(channel);
+    // 3. Customer menutup telepon di HP (Hangup / UserEvent: CustomerHangup)
+    const isHangupEvent = ['hangup', 'softhanguprequest'].includes(eventName || '');
+    const isCustomerHangupUserEvent = eventName === 'userevent' && String(raw.userevent || '').toLowerCase() === 'customerhangup';
+
+    if ((isHangupEvent || isCustomerHangupUserEvent) && channel) {
+      const taskIdStr = this.channelToTask.get(channel) || String(raw.taskid || '');
+      const call = this.getCallSessionByChannelOrTask(channel, taskIdStr);
+      if (call) {
+        call.handleCustomerHangup();
+      }
+
       if (taskIdStr) {
         this.log.info(`📴 Customer Hangup -> Task #${taskIdStr} (${channel})`);
+        this.taskToChannel.delete(taskIdStr);
       }
       this.channelDetails.delete(channel);
-      if (taskIdStr) {
-        this.taskToChannel.delete(taskIdStr);
-        this.channelToTask.delete(channel);
-      }
+      this.channelToTask.delete(channel);
     }
+  }
+
+  private getCallSessionByChannelOrTask(channel?: string, taskId?: string): CallSession | undefined {
+    for (const session of this.sessions.values()) {
+      if (channel && session.channel === channel) return session;
+      if (taskId && String(session.taskId) === taskId) return session;
+    }
+    return undefined;
   }
 
   public async start(): Promise<void> {
