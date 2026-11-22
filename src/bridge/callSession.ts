@@ -195,31 +195,59 @@ export class CallSession {
   }
 
   /**
-   * Menangani perintah kontrol dari bot AI (misal perintah transfer ke agen atau hangup)
+   * Menangani event JSON resmi dari AI sesuai spesifikasi Bot
    */
   private handleCustomAiCommand(rawText: string): void {
     try {
-      const data = JSON.parse(rawText);
-      const action = String(data.action || data.event || data.command || '').toLowerCase();
+      const msg = JSON.parse(rawText);
+      const mType = String(msg.type || '').toLowerCase();
+      const action = String(msg.action || '').toLowerCase();
+      const decision = String(msg.decision || '').toLowerCase();
+      const status = String(msg.status || '').toLowerCase();
+      const label = String(msg.label || '').toLowerCase();
 
-      if (action === 'transfer' || action === 'escalate') {
-        this.log.info(`👤 Perintah transfer dari AI -> Mengalihkan ke Agen Manusia...`);
-        this.ami.sendUserEvent(
-          this.taskId,
-          'HUMAN',
-          'AI_REQUESTED_TRANSFER',
-          this.uniqueid || '',
-          this.channel
-        );
-        this.server.closeSocket(this.session);
-        this.destroy();
-      } else if (action === 'hangup' || action === 'end') {
-        this.log.info(`📴 Perintah hangup dari AI -> Menutup panggilan...`);
+      // 1. VOICEMAIL / MESIN OPERATOR DETECTED
+      if (mType === 'raw_vm' && label === 'voicemail') {
+        this.log.info(`📼 [DETEKSI] = VOICEMAIL! Mengakhiri panggilan...`);
+        this.hasDecided = true;
+        this.ami.sendUserEvent(this.taskId, 'MACHINE', 'VOICEMAIL_DETECTED', this.uniqueid || '', this.channel);
         this.server.closeSocket(this.session);
         if (this.channel) {
           this.ami.hangup(this.channel, 16);
         }
         this.destroy();
+        return;
+      }
+
+      // 2. HUMAN DETECTED (Mulai ngobrol dengan bot - Bot melanjutkan percakapan)
+      if (mType === 'raw_vm' && label === 'human') {
+        this.log.info(`👤 [DETEKSI] = HUMAN! Bot melanjutkan percakapan...`);
+        this.ami.sendUserEvent(this.taskId, 'HUMAN', 'HUMAN_DETECTED', this.uniqueid || '', this.channel);
+        // Socket TIDAK ditutup agar percakapan dua arah terus berlanjut
+        return;
+      }
+
+      // 3. ESKALASI KE AGEN MANUSIA
+      if (action === 'transfer_agent' || decision === 'agent') {
+        this.log.info(`👥 [DETEKSI] = TRANSFER AGENT! Mengalihkan ke Agen Manusia...`);
+        this.hasDecided = true;
+        this.ami.sendUserEvent(this.taskId, 'AGENT', 'TRANSFER_REQUESTED', this.uniqueid || '', this.channel);
+        this.server.closeSocket(this.session);
+        this.destroy();
+        return;
+      }
+
+      // 4. PERCAKAPAN DENGAN BOT SELESAI
+      if (action === 'hangup' || status === 'completed' || mType === 'bot_done') {
+        this.log.info(`🏁 [DETEKSI] = PERCAKAPAN BOT TUNTAS! Menutup panggilan...`);
+        this.hasDecided = true;
+        this.ami.sendUserEvent(this.taskId, 'BOT_DONE', 'CONVERSATION_FINISHED', this.uniqueid || '', this.channel);
+        this.server.closeSocket(this.session);
+        if (this.channel) {
+          this.ami.hangup(this.channel, 16);
+        }
+        this.destroy();
+        return;
       }
     } catch {
       // Abaikan jika bukan format JSON
@@ -251,11 +279,11 @@ export class CallSession {
     this.log.error(`❌ [AI FAILURE] ${reason}`);
     this.log.info(`👤 [AUTO-FALLBACK] Mengalihkan nasabah Task #${this.taskId} LANGSUNG ke Agen Manusia...`);
 
-    // Kirim UserEvent HUMAN agar calldial-server langsung memindahkan channel ke agen
+    // Kirim UserEvent AGENT agar calldial-server langsung memindahkan channel ke agen
     this.ami.sendUserEvent(
       this.taskId,
-      'HUMAN',
-      `FALLBACK_TRANSFER: ${reason}`,
+      'AGENT',
+      `AI_DISCONNECTED_FALLBACK: ${reason}`,
       this.uniqueid || '',
       this.channel
     );

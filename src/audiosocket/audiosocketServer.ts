@@ -141,8 +141,8 @@ export class AudioSocketServer {
   public sendAudio(session: AudioSocketSession, chunk: Buffer): void {
     if (!session.socket || session.socket.destroyed || !session.socket.writable) return;
 
-    // Maksimum payload AudioSocket adalah 65535, standar frame biasanya 640-1600 bytes
-    const MAX_CHUNK = 1600;
+    // Standar frame Asterisk: 320 bytes (20ms @ 8kHz 16-bit mono)
+    const MAX_CHUNK = 320;
     let offset = 0;
     while (offset < chunk.length) {
       const sliceSize = Math.min(chunk.length - offset, MAX_CHUNK);
