@@ -24,6 +24,7 @@ export interface AiClientCallback {
   onOpen?: (url: string, durationMs: number) => void;
   onStart?: (data: VmStartMessage) => void;
   onDecision?: (decision: AmdDecision, raw: RawVmMessage) => void;
+  onMessage?: (rawText: string) => void;
   onError?: (error: Error) => void;
   onClose?: (code: number, reason: string) => void;
 }

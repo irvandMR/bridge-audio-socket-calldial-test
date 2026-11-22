@@ -38,10 +38,14 @@ export class AiClient {
   }
 
   private buildUrl(): string {
-    const sep = this.baseUrl.includes('?') ? '&' : '?';
-    let url = `${this.baseUrl}${sep}nc=0`;
-    if (this.channelName) {
-      url += `&channel=${encodeURIComponent(this.channelName)}`;
+    let url = this.baseUrl;
+    if (!url.includes('nc=')) {
+      const sep = url.includes('?') ? '&' : '?';
+      url += `${sep}nc=0`;
+    }
+    if (this.channelName && !url.includes('channel=')) {
+      const sep = url.includes('?') ? '&' : '?';
+      url += `${sep}channel=${encodeURIComponent(this.channelName)}`;
     }
     return url;
   }
@@ -129,6 +133,11 @@ export class AiClient {
   private handleIncomingMessage(rawData: RawData): void {
     try {
       const text = rawData.toString('utf-8');
+
+      if (this.callbacks.onMessage) {
+        this.callbacks.onMessage(text);
+      }
+
       const msg: RawVmMessage = JSON.parse(text);
       const mType = String(msg.type || '').toLowerCase();
       const status = String(msg.status || '').toUpperCase();

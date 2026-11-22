@@ -53,6 +53,9 @@ export class CallSession {
       onStart: (data: VmStartMessage) => {
         this.log.info(`🤖 AI Ready (sr=${data.sr || 8000}Hz)`);
       },
+      onMessage: (rawText: string) => {
+        this.log.info(`📩 Respon AI: ${rawText}`);
+      },
       onDecision: (decision: AmdDecision, raw: RawVmMessage) => {
         this.handleAmdDecision(decision, raw);
       },
