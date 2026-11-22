@@ -84,19 +84,16 @@ export class AmiClient {
   }
 
   /**
-   * Mengirim UserEvent AMDResult ke Asterisk Dialplan & Calldial Backend
+   * Mengirim UserEvent AMDResult ke Asterisk AMI agar ditangkap oleh Node.js userevent.js
+   * Format payload persis sesuai referensi script Python (hanya taskid, result, cause tanpa Channel/uniqueid)
    */
-  public sendUserEvent(taskId: number, result: string, cause: string = '', uniqueid: string = '', channel?: string): void {
+  public sendUserEvent(taskId: number, result: string, cause: string = ''): void {
     const params: AmiActionParams = {
       UserEvent: 'AMDResult',
       taskid: taskId,
       result: result,
-      cause: cause,
-      uniqueid: uniqueid
+      cause: cause
     };
-    if (channel) {
-      params.Channel = channel;
-    }
     this.sendAction('UserEvent', params);
   }
 

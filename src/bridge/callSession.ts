@@ -29,6 +29,7 @@ export class CallSession {
   private outboundRemainder: Buffer = Buffer.alloc(0);
   private lastStreamLogTime: number = 0;
   private hasSentHangupStatus: boolean = false;
+  private hasSentHumanEvent: boolean = false;
   private fallbackTimer: NodeJS.Timeout | null = null;
   private log: Logger;
 
@@ -149,54 +150,39 @@ export class CallSession {
    */
   private handleAmdDecision(decision: AmdDecision, raw: RawVmMessage): void {
     if (this.isDestroyed || this.hasDecided) return;
-    this.hasDecided = true;
     this.clearFallbackTimer();
 
     const conf = raw.confidence || raw.p_live_human || raw.p_voicemail || '';
     const confStr = conf ? ` (conf: ${conf})` : '';
 
     if (decision === 'HUMAN') {
-      this.log.info(`👤 [DETEKSI] = HUMAN${confStr}! Bot melanjutkan percakapan dua arah...`);
-      
-      this.ami.sendUserEvent(
-        this.taskId, 
-        'HUMAN', 
-        `HUMAN_DETECTED${confStr}`, 
-        this.uniqueid || '', 
-        this.channel
-      );
-
-      // PENTING: Socket TIDAK ditutup agar bot AI bisa terus berbicara dua arah dengan nasabah!
+      if (!this.hasSentHumanEvent) {
+        this.hasSentHumanEvent = true;
+        this.log.info(`👤 [DETEKSI] = HUMAN${confStr}! Bot melanjutkan percakapan dua arah...`);
+        // Format payload AMI persis script Python: hanya taskId, result, cause tanpa Channel/uniqueid
+        this.ami.sendUserEvent(this.taskId, 'HUMAN', `HUMAN_DETECTED${confStr}`);
+      }
+      // PENTING: Socket & channel Asterisk TIDAK ditutup agar bot AI terus berbicara dua arah dengan nasabah!
       return;
     } else if (decision === 'NOTHING') {
+      this.hasDecided = true;
       this.log.info(`🔇 Result: NOTHING (Silence) -> Terminating call.`);
-      this.ami.sendUserEvent(
-        this.taskId, 
-        'NOTHING', 
-        'NO_AUDIO_DETECTED', 
-        this.uniqueid || '', 
-        this.channel
-      );
+      this.ami.sendUserEvent(this.taskId, 'NOTHING', 'NO_AUDIO_DETECTED');
       this.server.closeSocket(this.session);
       if (this.channel) {
         this.ami.hangup(this.channel, 16);
       }
     } else if (decision === 'MACHINE') {
+      this.hasDecided = true;
       this.log.info(`📼 Result: MACHINE / VOICEMAIL${confStr} -> Terminating call.`);
-      this.ami.sendUserEvent(
-        this.taskId, 
-        'MACHINE', 
-        `VOICEMAIL_DETECTED${confStr}`, 
-        this.uniqueid || '', 
-        this.channel
-      );
+      this.ami.sendUserEvent(this.taskId, 'MACHINE', `VOICEMAIL_DETECTED${confStr}`);
       this.server.closeSocket(this.session);
       if (this.channel) {
         this.ami.hangup(this.channel, 16);
       }
     }
 
-    this.destroy();
+    this.destroy('AMD Decision');
   }
 
   /**
@@ -212,22 +198,26 @@ export class CallSession {
       const label = String(msg.label || '').toLowerCase();
 
       // 1. VOICEMAIL / MESIN OPERATOR DETECTED
-      if (mType === 'raw_vm' && label === 'voicemail') {
+      if (mType === 'raw_vm' && (label === 'voicemail' || status === 'machine')) {
         this.log.info(`📼 [DETEKSI] = VOICEMAIL! Mengakhiri panggilan...`);
         this.hasDecided = true;
-        this.ami.sendUserEvent(this.taskId, 'MACHINE', 'VOICEMAIL_DETECTED', this.uniqueid || '', this.channel);
+        this.clearFallbackTimer();
+        this.ami.sendUserEvent(this.taskId, 'MACHINE', 'VOICEMAIL_DETECTED');
         this.server.closeSocket(this.session);
         if (this.channel) {
           this.ami.hangup(this.channel, 16);
         }
-        this.destroy();
+        this.destroy('Voicemail Detected');
         return;
       }
 
       // 2. HUMAN DETECTED (Mulai ngobrol dengan bot - Bot melanjutkan percakapan)
-      if (mType === 'raw_vm' && label === 'human') {
-        this.log.info(`👤 [DETEKSI] = HUMAN! Bot melanjutkan percakapan...`);
-        this.ami.sendUserEvent(this.taskId, 'HUMAN', 'HUMAN_DETECTED', this.uniqueid || '', this.channel);
+      if (mType === 'raw_vm' && (label === 'human' || label === 'live_human' || status === 'human')) {
+        if (!this.hasSentHumanEvent) {
+          this.hasSentHumanEvent = true;
+          this.log.info(`👤 [DETEKSI] = HUMAN! Bot melanjutkan percakapan dua arah...`);
+          this.ami.sendUserEvent(this.taskId, 'HUMAN', 'HUMAN_DETECTED');
+        }
         // Socket TIDAK ditutup agar percakapan dua arah terus berlanjut
         return;
       }
@@ -236,9 +226,10 @@ export class CallSession {
       if (action === 'transfer_agent' || decision === 'agent') {
         this.log.info(`👥 [DETEKSI] = TRANSFER AGENT! Mengalihkan ke Agen Manusia...`);
         this.hasDecided = true;
-        this.ami.sendUserEvent(this.taskId, 'AGENT', 'TRANSFER_REQUESTED', this.uniqueid || '', this.channel);
+        this.clearFallbackTimer();
+        this.ami.sendUserEvent(this.taskId, 'AGENT', 'TRANSFER_REQUESTED');
         this.server.closeSocket(this.session);
-        this.destroy();
+        this.destroy('Transfer Agent Requested');
         return;
       }
 
@@ -246,12 +237,13 @@ export class CallSession {
       if (action === 'hangup' || status === 'completed' || mType === 'bot_done') {
         this.log.info(`🏁 [DETEKSI] = PERCAKAPAN BOT TUNTAS! Menutup panggilan...`);
         this.hasDecided = true;
-        this.ami.sendUserEvent(this.taskId, 'BOT_DONE', 'CONVERSATION_FINISHED', this.uniqueid || '', this.channel);
+        this.clearFallbackTimer();
+        this.ami.sendUserEvent(this.taskId, 'BOT_DONE', 'CONVERSATION_FINISHED');
         this.server.closeSocket(this.session);
         if (this.channel) {
           this.ami.hangup(this.channel, 16);
         }
-        this.destroy();
+        this.destroy('Bot Conversation Finished');
         return;
       }
     } catch {
@@ -313,14 +305,12 @@ export class CallSession {
     this.ami.sendUserEvent(
       this.taskId,
       'AGENT',
-      `AI_DISCONNECTED_FALLBACK: ${reason}`,
-      this.uniqueid || '',
-      this.channel
+      `AI_DISCONNECTED_FALLBACK: ${reason}`
     );
 
     // Tutup socket audio agar Asterisk melepaskan channel untuk di-redirect ke agen
     this.server.closeSocket(this.session);
-    this.destroy();
+    this.destroy('Fallback to Agent');
   }
 
   private clearFallbackTimer(): void {
