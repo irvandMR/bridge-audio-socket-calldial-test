@@ -24,10 +24,17 @@ export class AiClient {
     if (typeof channelOrCallbacks === 'string') {
       this.channelName = channelOrCallbacks;
       this.callbacks = callbacks || {};
+    } else if (channelOrCallbacks && typeof channelOrCallbacks === 'object') {
+      this.channelName = undefined;
+      this.callbacks = channelOrCallbacks;
     } else {
       this.channelName = undefined;
-      this.callbacks = channelOrCallbacks || {};
+      this.callbacks = callbacks || {};
     }
+  }
+
+  public getWsUrl(): string {
+    return this.buildUrl();
   }
 
   private buildUrl(): string {
@@ -43,6 +50,7 @@ export class AiClient {
     if (this.ws) return;
 
     const fullUrl = this.buildUrl();
+    const startTime = Date.now();
 
     // Optimasi WebSocket:
     // 1. perMessageDeflate: false -> matikan kompresi agar latensi 0 ms untuk PCM raw
@@ -59,6 +67,11 @@ export class AiClient {
 
     this.ws.on('open', () => {
       this.isConnected = true;
+      const durationMs = Date.now() - startTime;
+
+      if (this.callbacks.onOpen) {
+        this.callbacks.onOpen(fullUrl, durationMs);
+      }
 
       // Flush semua audio yang sempat masuk saat handshake sedang berlangsung
       if (this.earlyQueue.length > 0) {

@@ -2,7 +2,7 @@
 import { AudioSocketSession } from '../audiosocket/audiosocket.type';
 import { AiClient } from '../ai/aiClient';
 import { AmiClient } from '../ami/amiClient';
-import { AmdDecision, RawVmMessage } from '../ai/ai.type';
+import { AmdDecision, RawVmMessage, VmStartMessage } from '../ai/ai.type';
 import { AudioSocketServer } from '../audiosocket/audiosocketServer';
 import { Logger } from '../logger/logger';
 
@@ -47,6 +47,12 @@ export class CallSession {
 
     // Buka sesi WebSocket AI INSTAN (0 ms)
     this.aiClient = new AiClient(aiWsUrl, channel, {
+      onOpen: (url: string, durationMs: number) => {
+        this.log.info(`⚡ Terhubung ke AI (${durationMs}ms) -> ${url}`);
+      },
+      onStart: (data: VmStartMessage) => {
+        this.log.info(`🤖 AI Ready (sr=${data.sr || 8000}Hz)`);
+      },
       onDecision: (decision: AmdDecision, raw: RawVmMessage) => {
         this.handleAmdDecision(decision, raw);
       },
@@ -63,6 +69,7 @@ export class CallSession {
       }
     });
 
+    this.log.info(`🌐 Membuka WebSocket ke AI: ${this.aiClient.getWsUrl()}`);
     this.aiClient.connect();
 
     // 🛡️ SAFETY TIMER: Jika dalam 10 detik AI tidak merespon/macet, langsung transfer ke agen

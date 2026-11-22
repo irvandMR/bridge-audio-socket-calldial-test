@@ -21,6 +21,7 @@ export interface RawVmMessage {
 export type AiServerMessage = VmStartMessage | RawVmMessage;
 
 export interface AiClientCallback {
+  onOpen?: (url: string, durationMs: number) => void;
   onStart?: (data: VmStartMessage) => void;
   onDecision?: (decision: AmdDecision, raw: RawVmMessage) => void;
   onError?: (error: Error) => void;
