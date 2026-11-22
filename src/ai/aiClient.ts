@@ -120,6 +120,7 @@ export class AiClient {
     this.ws.on('close', (code: number, reason: Buffer) => {
       this.isConnected = false;
       this.earlyQueue = [];
+      this.earlyJsonQueue = [];
       if (this.callbacks.onClose) {
         this.callbacks.onClose(code, reason.toString('utf-8'));
       }

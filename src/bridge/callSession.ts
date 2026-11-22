@@ -102,9 +102,9 @@ export class CallSession {
           this.fallbackToAgent(`Socket AI error/unreachable: ${err.message}`);
         }
       },
-      onClose: (_code: number, _reason: string) => {
-        // Ketika socket AI ditutup (selesai bicara, nasabah tutup, atau AI selesai), tutup sesi normal
-        this.destroy();
+      onClose: (code: number, reason: string) => {
+        this.log.info(`🔌 WebSocket AI closed (code: ${code}, reason: ${reason || 'normal'})`);
+        this.destroy(`WebSocket AI closed (${code})`);
       }
     });
 
@@ -292,9 +292,8 @@ export class CallSession {
     this.isCustomerHangup = true;
     this.hasDecided = true;
     this.clearFallbackTimer();
-    this.sendCallStatus('hangup', '16', 'Customer Hangup');
-    this.log.info(`📴 Nasabah menutup telepon. Mengakhiri sesi tanpa dialihkan ke agen.`);
-    this.destroy();
+    this.log.info(`📴 Nasabah menutup telepon (Asterisk HANGUP).`);
+    this.destroy('Customer Hangup');
   }
 
   /**
@@ -331,12 +330,13 @@ export class CallSession {
     }
   }
 
-  public destroy(): void {
+  public destroy(source: string = 'internal'): void {
     if (this.isDestroyed) return;
     this.isDestroyed = true;
     this.clearFallbackTimer();
 
-    this.sendCallStatus('hangup', '16', 'Normal Clearing');
+    this.log.info(`🛑 Sesi dihentikan [Penyebab: ${source}]`);
+    this.sendCallStatus('hangup', '16', source);
     this.aiClient.close();
     this.onEndCallback(this.uuid);
   }

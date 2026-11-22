@@ -66,10 +66,11 @@ export class BridgeService {
       onSessionEnd: (session: AudioSocketSession, reason?: string) => {
         const call = this.sessions.get(session.id.toLowerCase());
         if (call) {
+          this.log.info(`🔌 AudioSocket Asterisk closed untuk Task #${call.taskId} (reason: ${reason || 'normal'})`);
           if (reason?.includes('HANGUP')) {
             call.handleCustomerHangup();
           } else {
-            call.destroy();
+            call.destroy(`Asterisk AudioSocket End (${reason || 'closed'})`);
           }
         }
       }
