@@ -39,14 +39,6 @@ export class AiClient {
 
   private buildUrl(): string {
     let url = this.baseUrl;
-    if (!url.includes('nc=')) {
-      const sep = url.includes('?') ? '&' : '?';
-      url += `${sep}nc=0`;
-    }
-    if (!url.includes('sr=')) {
-      const sep = url.includes('?') ? '&' : '?';
-      url += `${sep}sr=8000`;
-    }
     if (this.channelName && !url.includes('channel=')) {
       const sep = url.includes('?') ? '&' : '?';
       url += `${sep}channel=${encodeURIComponent(this.channelName)}`;
@@ -129,7 +121,11 @@ export class AiClient {
    */
   public sendAudio(audioChunk: Buffer): void {
     if (this.isConnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(audioChunk, { binary: true });
+      this.ws.send(audioChunk, { binary: true }, (err) => {
+        if (err && this.callbacks.onError) {
+          this.callbacks.onError(new Error(`Gagal mengirim audio ke WebSocket AI: ${err.message}`));
+        }
+      });
     } else if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
       this.earlyQueue.push(audioChunk);
     }

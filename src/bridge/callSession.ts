@@ -6,7 +6,6 @@ import { AmdDecision, RawVmMessage, VmStartMessage } from '../ai/ai.type';
 import { AudioSocketServer } from '../audiosocket/audiosocketServer';
 import { Logger } from '../logger/logger';
 
-const CHUNK_SIZE_INBOUND = 800; // 50ms @ 8kHz PCM 16-bit Mono
 const AI_TIMEOUT_FALLBACK_MS = 10000; // 10 detik batas waktu respon AI sebelum fallback ke agen
 
 export class CallSession {
@@ -24,7 +23,9 @@ export class CallSession {
   private isDestroyed: boolean = false;
   private hasDecided: boolean = false;
   private hasSpoken: boolean = false;
-  private inboundBuffer = Buffer.alloc(0);
+  private totalInboundBytes: number = 0;
+  private totalOutboundBytes: number = 0;
+  private lastStreamLogTime: number = 0;
   private fallbackTimer: NodeJS.Timeout | null = null;
   private log: Logger;
 
@@ -62,8 +63,9 @@ export class CallSession {
         if (this.isDestroyed) return;
         if (!this.hasSpoken) {
           this.hasSpoken = true;
-          this.log.info(`🔊 AI mulai berbicara (streaming audio ke nasabah)...`);
+          this.log.info(`🔊 Suara AI pertama diterima (${audioChunk.length} bytes) -> Mengalirkan ke nasabah...`);
         }
+        this.totalOutboundBytes += audioChunk.length;
         this.server.sendAudio(this.session, audioChunk);
       },
       onMessage: (rawText: string) => {
@@ -97,17 +99,24 @@ export class CallSession {
   }
 
   /**
-   * Menerima audio dari Asterisk dan diteruskan ke AiClient
+   * Menerima audio dari Asterisk dan diteruskan ke AiClient secara instan (zero buffer delay)
    */
   public pushAudio(chunk: Buffer): void {
     if (this.isDestroyed) return;
 
-    this.inboundBuffer = Buffer.concat([this.inboundBuffer, chunk]);
+    if (this.totalInboundBytes === 0) {
+      this.log.info(`🎙️ Audio pertama dari Asterisk diterima (${chunk.length} bytes) -> Mengalirkan ke AI`);
+    }
 
-    while (this.inboundBuffer.length >= CHUNK_SIZE_INBOUND && !this.isDestroyed) {
-      const audioChunk = this.inboundBuffer.subarray(0, CHUNK_SIZE_INBOUND);
-      this.inboundBuffer = this.inboundBuffer.subarray(CHUNK_SIZE_INBOUND);
-      this.aiClient.sendAudio(audioChunk);
+    this.totalInboundBytes += chunk.length;
+    this.aiClient.sendAudio(chunk);
+
+    const now = Date.now();
+    if (now - this.lastStreamLogTime >= 3000) {
+      this.lastStreamLogTime = now;
+      const inSec = (this.totalInboundBytes / 16000).toFixed(1);
+      const outSec = (this.totalOutboundBytes / 16000).toFixed(1);
+      this.log.info(`📊 Audio Stream -> Nasabah ke AI: ${this.totalInboundBytes} bytes (~${inSec}s) | AI ke Nasabah: ${this.totalOutboundBytes} bytes (~${outSec}s)`);
     }
   }
 
