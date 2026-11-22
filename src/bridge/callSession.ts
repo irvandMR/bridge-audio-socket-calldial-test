@@ -351,11 +351,12 @@ export class CallSession {
     this.log.error(`❌ [AI FAILURE] ${reason}`);
     this.log.info(`👤 [AUTO-FALLBACK] Mengalihkan nasabah Task #${this.taskId} LANGSUNG ke Agen Manusia...`);
 
-    // Kirim UserEvent AGENT agar calldial-server langsung memindahkan channel ke agen
+    // Kirim UserEvent AGENT DENGAN Channel agar calldial-server langsung memindahkan channel ke agen
     this.ami.sendUserEvent(
       this.taskId,
       'AGENT',
-      `AI_DISCONNECTED_FALLBACK: ${reason}`
+      `AI_DISCONNECTED_FALLBACK: ${reason}`,
+      this.channel
     );
 
     // Tutup socket audio agar Asterisk melepaskan channel untuk di-redirect ke agen
@@ -381,8 +382,10 @@ export class CallSession {
     // 1. Tutup koneksi audio TCP AudioSocket ke Asterisk
     this.server.closeSocket(this.session);
 
-    // 2. Kirim perintah Hangup ke Asterisk AMI agar panggilan di HP nasabah langsung tertutup
-    if (this.channel && !this.isCustomerHangup) {
+    // 2. Kirim perintah Hangup ke Asterisk AMI HANYA jika panggilan memang selesai / hangup
+    // JANGAN hangup channel jika sesi berakhir karena transfer ke agen manusia!
+    const isTransferToAgent = source.toLowerCase().includes('agent');
+    if (this.channel && !this.isCustomerHangup && !isTransferToAgent) {
       this.ami.hangup(this.channel, 16);
     }
 

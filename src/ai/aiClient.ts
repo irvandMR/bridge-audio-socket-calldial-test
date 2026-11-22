@@ -54,10 +54,6 @@ export class AiClient {
       params.push(`channel=${encodeURIComponent(this.channelName)}`);
     }
 
-    if (this.outboundResponse && !url.includes('outbound_response=')) {
-      params.push(`outbound_response=${encodeURIComponent(this.outboundResponse)}`);
-    }
-
     if (params.length > 0) {
       url += `${sep}${params.join('&')}`;
     }
