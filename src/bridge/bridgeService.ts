@@ -57,7 +57,9 @@ export class BridgeService {
           cachedChannel,
           cachedDetails?.uniqueid,
           (id: string) => this.sessions.delete(id),
-          cachedOutboundResponse
+          cachedOutboundResponse,
+          cachedDetails?.callerId,
+          cachedDetails?.phoneNumber || cachedDetails?.exten
         );
         this.sessions.set(session.id.toLowerCase(), call);
 
@@ -139,6 +141,11 @@ export class BridgeService {
     const callerId = details?.callerId || 'N/A';
     const phoneCustomer = phone || details?.exten || 'N/A';
 
+    call.setCallerInfo(
+      callerId !== 'N/A' ? callerId : undefined,
+      phoneCustomer !== 'N/A' ? phoneCustomer : undefined
+    );
+
     this.log.info(
       `📞 Call Connected -> Task #${taskId} | Channel: ${channelName || 'N/A'} | CallerID: ${callerId} | Phone: ${phoneCustomer} | Mode: ${finalOutboundResponse.toUpperCase()}`
     );
@@ -158,6 +165,12 @@ export class BridgeService {
         existing.state = raw.channelstatedesc || existing.state;
         existing.uniqueid = raw.uniqueid || existing.uniqueid;
         this.channelDetails.set(channel, existing);
+
+        const tid = this.channelToTask.get(channel);
+        const activeCall = this.getCallSessionByChannelOrTask(channel, tid);
+        if (activeCall) {
+          activeCall.setCallerInfo(existing.callerId, existing.phoneNumber || existing.exten);
+        }
       }
     }
 
@@ -186,6 +199,19 @@ export class BridgeService {
         } else if (varName === 'PHONE_NUMBER' || varName === 'PHONE') {
           existing.phoneNumber = val;
           this.channelDetails.set(channel, existing);
+          const tid = this.channelToTask.get(channel);
+          const activeCall = this.getCallSessionByChannelOrTask(channel, tid);
+          if (activeCall) {
+            activeCall.setCallerInfo(undefined, val);
+          }
+        } else if (varName === 'CALLER_ID' || varName === 'CALLERID') {
+          existing.callerId = val;
+          this.channelDetails.set(channel, existing);
+          const tid = this.channelToTask.get(channel);
+          const activeCall = this.getCallSessionByChannelOrTask(channel, tid);
+          if (activeCall) {
+            activeCall.setCallerInfo(val, undefined);
+          }
         } else if (varName === 'OUTBOUND_RESPONSE' || varName === 'OUTBOUNDRESPONSE') {
           const normalized = val.toLowerCase();
           const mode: 'agent' | 'ai' = (normalized === 'ai' || normalized === 'agent') ? normalized : 'agent';

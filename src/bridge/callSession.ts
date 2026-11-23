@@ -14,6 +14,8 @@ export class CallSession {
   public readonly taskId: number;
   public channel?: string;
   public uniqueid?: string;
+  public callerId?: string;
+  public phone?: string;
   public isCustomerHangup: boolean = false;
   public outboundResponse: 'agent' | 'ai' = 'agent';
 
@@ -42,7 +44,9 @@ export class CallSession {
     channel: string | undefined,
     uniqueid: string | undefined,
     onEnd: (uuid: string) => void,
-    outboundResponse: 'agent' | 'ai' = 'agent'
+    outboundResponse: 'agent' | 'ai' = 'agent',
+    callerId?: string,
+    phone?: string
   ) {
     this.uuid = session.id.toLowerCase();
     this.taskId = session.taskId;
@@ -50,6 +54,8 @@ export class CallSession {
     this.channel = channel;
     this.uniqueid = uniqueid;
     this.outboundResponse = outboundResponse;
+    this.callerId = callerId;
+    this.phone = phone;
     this.ami = ami;
     this.server = server;
     this.onEndCallback = onEnd;
@@ -158,6 +164,15 @@ export class CallSession {
       this.log.info(`🔄 Update OUTBOUND_RESPONSE: ${this.outboundResponse} -> ${response}`);
       this.outboundResponse = response;
       this.aiClient.setOutboundResponse(response);
+    }
+  }
+
+  public setCallerInfo(callerId?: string, phone?: string): void {
+    if (callerId && callerId !== 'N/A') {
+      this.callerId = callerId;
+    }
+    if (phone && phone !== 'N/A') {
+      this.phone = phone;
     }
   }
 
@@ -314,6 +329,8 @@ export class CallSession {
       status,
       task_id: String(this.taskId),
       channel: this.channel || '',
+      caller_id: this.callerId || '',
+      phone: this.phone || '',
       outbound_response: this.outboundResponse
     };
 
